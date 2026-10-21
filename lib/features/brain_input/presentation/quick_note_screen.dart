@@ -1,10 +1,24 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_speed_dial/flutter_speed_dial.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
+import 'package:audioplayers/audioplayers.dart';
+
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:google_mlkit_image_labeling/google_mlkit_image_labeling.dart';
+
 import '../../../core/theme/app_colors.dart';
 import '../../../data/database/note_dao.dart';
 import '../../../data/embedding/similarity_engine.dart';
 import '../../../core/background/background_worker.dart';
 import '../../search/presentation/semantic_search_bar.dart';
+
+enum NoteType { all, text, image, audio }
 
 class QuickNoteScreen extends StatefulWidget {
   const QuickNoteScreen({super.key});
@@ -15,15 +29,40 @@ class QuickNoteScreen extends StatefulWidget {
 
 class _QuickNoteScreenState extends State<QuickNoteScreen> {
   final NoteDao _noteDao = NoteDao();
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  String _lastLiveTranscription = '';
   List<Map<String, dynamic>> _allNotes = [];
   List<Map<String, dynamic>> _allConnections = [];
   String _searchQuery = '';
   String? _selectedEntityFilter;
+  NoteType _selectedTypeFilter = NoteType.all;
+
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+
+  bool _isRecording = false;
+  String? _currentlyPlayingPath;
+  bool _isPlaying = false;
 
   @override
   void initState() {
     super.initState();
     _refreshNotes();
+    _audioPlayer.onPlayerComplete.listen((_) {
+      if (mounted) {
+        setState(() {
+          _isPlaying = false;
+          _currentlyPlayingPath = null;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _audioRecorder.dispose();
+    _audioPlayer.dispose();
+    super.dispose();
   }
 
   Future<void> _refreshNotes() async {
@@ -37,7 +76,300 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
     }
   }
 
-  /// Apre un editor completo stile Obsidian per scrivere o modificare documenti lunghi
+  NoteType _getNoteType(String content) {
+    if (content.contains('[Nota Vocale Registrata]')) {
+      return NoteType.audio;
+    } else if (content.contains('[Scansione Immagine') ||
+        content.contains('[IMG_PATH:')) {
+      return NoteType.image;
+    }
+    return NoteType.text;
+  }
+
+  Map<String, dynamic> _parseNoteDetails(String content) {
+    String? imagePath;
+    String? audioPath;
+
+    final imgMatch = RegExp(r'\[IMG_PATH:(.*?)\]').firstMatch(content);
+    if (imgMatch != null) imagePath = imgMatch.group(1);
+
+    final audioMatch = RegExp(r'\[AUDIO_PATH:(.*?)\]').firstMatch(content);
+    if (audioMatch != null) audioPath = audioMatch.group(1);
+
+    String cleanContent = content
+        .replaceAll(RegExp(r'\[IMG_PATH:.*?\]'), '')
+        .replaceAll(RegExp(r'\[AUDIO_PATH:.*?\]'), '')
+        .replaceAll('[Nota Vocale Registrata]', '')
+        .replaceAll('[Scansione Immagine / Coordinate]', '')
+        .replaceAll('[Nota con Immagine allegata]', '')
+        .trim();
+
+    if (cleanContent.isEmpty) {
+      cleanContent = 'Nessun testo allegato';
+    }
+
+    final lines = cleanContent.split('\n');
+    final title = lines.first.trim();
+    final body = lines.length > 1 ? lines.sublist(1).join('\n').trim() : '';
+
+    return {
+      'title': title,
+      'body': body,
+      'imagePath': imagePath,
+      'audioPath': audioPath,
+    };
+  }
+
+  Future<void> _handleImageCapture(ImageSource source) async {
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickImage(
+        source: source,
+        imageQuality: 85,
+      );
+      if (pickedFile == null) return;
+
+      if (!mounted) return;
+      HapticFeedback.mediumImpact();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Analisi visiva locale ed OCR in corso...'),
+        ),
+      );
+
+      // Salvataggio sicuro dell'immagine nei documenti locali dell'app
+      final appDir = await getApplicationDocumentsDirectory();
+      final fileName = 'img_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final savedImage = await File(pickedFile.path)
+          .copy('${appDir.path}/$fileName');
+
+      final inputImage = InputImage.fromFilePath(savedImage.path);
+
+      // 1. OCR Locale (Lettura Testo)
+      final textRecognizer = TextRecognizer(
+        script: TextRecognitionScript.latin,
+      );
+      final RecognizedText recognizedText = await textRecognizer.processImage(
+        inputImage,
+      );
+      await textRecognizer.close();
+
+      // 2. Vision AI Locale (Riconoscimento Oggetti/Scena on-device)
+      final ImageLabelerOptions options = ImageLabelerOptions(
+        confidenceThreshold: 0.6,
+      );
+      final imageLabeler = ImageLabeler(options: options);
+      final List<ImageLabel> labels = await imageLabeler.processImage(
+        inputImage,
+      );
+      await imageLabeler.close();
+
+      final extractedText = recognizedText.text.trim();
+      final detectedObjects = labels.map((l) => l.label).join(', ');
+
+      String content = '[IMG_PATH:${savedImage.path}]\n';
+      if (detectedObjects.isNotEmpty) {
+        content += '[Vision AI]: $detectedObjects\n';
+      }
+      if (extractedText.isNotEmpty) {
+        content += '[Testo Rilevato]:\n$extractedText';
+      } else if (detectedObjects.isEmpty) {
+        content += '[Nota con Immagine allegata]';
+      }
+
+      await _noteDao.insertQuickNote(content);
+      await BackgroundWorker.processPendingNotes();
+      await _refreshNotes();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+    } catch (e) {
+      debugPrint('Errore Vision/OCR locale: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Errore durante l\'analisi: $e')));
+    }
+  }
+
+  void _showAudioRecorderSheet() {
+  _lastLiveTranscription = '';
+  showModalBottomSheet(
+    context: context,
+    isDismissible: false,
+    backgroundColor: AppColors.cardSurface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+    ),
+    builder: (ctx) {
+      return StatefulBuilder(
+        builder: (context, setStateModal) {
+          return Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Registrazione e Trascrizione Vocale',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Icon(
+                  _isRecording ? Icons.mic_rounded : Icons.mic_none_rounded,
+                  color: _isRecording ? AppColors.accentCoral : AppColors.textSecondary,
+                  size: 48,
+                ),
+                if (_lastLiveTranscription.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    _lastLiveTranscription,
+                    textAlign: TextAlign.center,
+                    maxLines: 3,
+                    style: const TextStyle(
+                      color: AppColors.accentCoral,
+                      fontSize: 13,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (!_isRecording)
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          bool available = await _speech.initialize();
+                          if (await _audioRecorder.hasPermission()) {
+                            final dir = await getApplicationDocumentsDirectory();
+                            final path = '${dir.path}/audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
+                            await _audioRecorder.start(
+                              const RecordConfig(
+                                encoder: AudioEncoder.aacLc,
+                                bitRate: 32000,
+                                numChannels: 1,
+                              ),
+                              path: path,
+                            );
+
+                            if (available) {
+                              _speech.listen(
+                                onResult: (result) {
+                                  setStateModal(() {
+                                    _lastLiveTranscription = result.recognizedWords;
+                                  });
+                                },
+                              );
+                            }
+
+                            setStateModal(() => _isRecording = true);
+                            HapticFeedback.mediumImpact();
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.statusGreenBg,
+                        ),
+                        icon: const Icon(Icons.play_arrow, color: AppColors.statusGreen),
+                        label: const Text('Avvia', style: TextStyle(color: AppColors.statusGreen)),
+                      )
+                    else
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          final path = await _audioRecorder.stop();
+                          await _speech.stop();
+                          setStateModal(() => _isRecording = false);
+                          HapticFeedback.heavyImpact();
+                          if (path != null) {
+                            final textContent = _lastLiveTranscription.trim().isNotEmpty
+                                ? _lastLiveTranscription.trim()
+                                : 'Nota Vocale Registrata';
+                            await _noteDao.insertQuickNote(
+                              '[AUDIO_PATH:$path]\n[Nota Vocale]\n$textContent',
+                            );
+                            await _refreshNotes();
+                          }
+                          if (ctx.mounted) Navigator.pop(ctx);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.accentCoralDark,
+                        ),
+                        icon: const Icon(Icons.stop, color: AppColors.accentCoral),
+                        label: const Text('Salva', style: TextStyle(color: AppColors.accentCoral)),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+  Future<void> _toggleAudioPlayback(String audioPath) async {
+    if (_isPlaying && _currentlyPlayingPath == audioPath) {
+      await _audioPlayer.pause();
+      setState(() => _isPlaying = false);
+    } else {
+      await _audioPlayer.stop();
+      await _audioPlayer.play(DeviceFileSource(audioPath));
+      setState(() {
+        _currentlyPlayingPath = audioPath;
+        _isPlaying = true;
+      });
+    }
+  }
+
+  /// ELIMINAZIONE NOTA CON OPZIONE "ANNULLA"
+  Future<void> _deleteNoteWithUndo(Map<String, dynamic> note) async {
+    final String noteId = note['id'] as String;
+
+    setState(() {
+      _allNotes.removeWhere((n) => n['id'] == noteId);
+    });
+
+    HapticFeedback.mediumImpact();
+    bool undone = false;
+
+    final snackBar = SnackBar(
+      content: const Text(
+        'Nota eliminata',
+        style: TextStyle(color: AppColors.textPrimary),
+      ),
+      backgroundColor: AppColors.cardSurface,
+      behavior: SnackBarBehavior.floating,
+      // Il margine inferiore alza la notifica facendola fluttuare sopra la pillola di navigazione
+      margin: const EdgeInsets.only(bottom: 85, left: 16, right: 16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: AppColors.cardSurfaceLight),
+      ),
+      duration: const Duration(seconds: 4),
+      action: SnackBarAction(
+        label: 'ANNULLA',
+        textColor: AppColors.accentCoral,
+        onPressed: () {
+          undone = true;
+          _refreshNotes();
+        },
+      ),
+    );
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(snackBar);
+
+    await Future.delayed(const Duration(seconds: 4));
+    if (!undone) {
+      await _noteDao.deleteNote(noteId);
+    }
+  }
+
   Future<void> _openDocumentEditor({Map<String, dynamic>? existingNote}) async {
     HapticFeedback.mediumImpact();
     final isEditing = existingNote != null;
@@ -46,28 +378,14 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
     );
     final String? noteId = isEditing ? (existingNote['id'] as String) : null;
 
-    // Trova le note collegate a questo documento (Backlinks stile Obsidian)
-    final connectedNotes = <Map<String, dynamic>>[];
-    if (isEditing) {
-      for (final conn in _allConnections) {
-        String? linkedId;
-        if (conn['source_id'] == noteId) linkedId = conn['target_id'] as String;
-        if (conn['target_id'] == noteId) linkedId = conn['source_id'] as String;
-        if (linkedId != null) {
-          final match = _allNotes.where((n) => n['id'] == linkedId);
-          if (match.isNotEmpty && !connectedNotes.any((e) => e['id'] == linkedId)) {
-            connectedNotes.add({...match.first, '_sim': conn['similarity_score']});
-          }
-        }
-      }
-    }
-
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (ctx) {
           return StatefulBuilder(
             builder: (context, setModalState) {
-              final liveEntities = SimilarityEngine.extractEntities(controller.text);
+              final liveEntities = SimilarityEngine.extractEntities(
+                controller.text,
+              );
 
               return Scaffold(
                 backgroundColor: AppColors.background,
@@ -75,17 +393,27 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                   backgroundColor: AppColors.background,
                   elevation: 0,
                   leading: IconButton(
-                    icon: const Icon(Icons.arrow_back_ios_new_rounded, color: AppColors.textPrimary),
+                    icon: const Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      color: AppColors.textPrimary,
+                    ),
                     onPressed: () => Navigator.pop(ctx),
                   ),
                   title: Text(
-                    isEditing ? 'Documento' : 'Nuovo Documento',
-                    style: const TextStyle(color: AppColors.textPrimary, fontSize: 16, fontWeight: FontWeight.w600),
+                    isEditing ? 'Modifica Nota' : 'Nuova Nota',
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   actions: [
                     if (isEditing)
                       IconButton(
-                        icon: const Icon(Icons.delete_outline_rounded, color: AppColors.accentCoral),
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          color: AppColors.accentCoral,
+                        ),
                         onPressed: () async {
                           HapticFeedback.heavyImpact();
                           await _noteDao.deleteNote(noteId!);
@@ -105,7 +433,6 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                           } else {
                             await _noteDao.insertQuickNote(text);
                           }
-                          // Indicizza subito per rendere attivi i link e la ricerca naturale
                           await BackgroundWorker.processPendingNotes();
                           if (ctx.mounted) Navigator.pop(ctx);
                           await _refreshNotes();
@@ -113,7 +440,9 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                         style: TextButton.styleFrom(
                           backgroundColor: AppColors.accentCoralDark,
                           foregroundColor: AppColors.accentCoral,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
                         ),
                         icon: const Icon(Icons.check_rounded, size: 18),
                         label: const Text('Salva'),
@@ -122,29 +451,42 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                   ],
                 ),
                 body: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20.0,
+                    vertical: 8.0,
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Soggetti / Entità estratti dal testo in tempo reale
                       if (liveEntities.isNotEmpty) ...[
                         SingleChildScrollView(
                           scrollDirection: Axis.horizontal,
                           child: Row(
                             children: [
-                              const Icon(Icons.person_pin_circle_outlined, size: 16, color: AppColors.statusGreen),
+                              const Icon(
+                                Icons.person_pin_circle_outlined,
+                                size: 16,
+                                color: AppColors.statusGreen,
+                              ),
                               const SizedBox(width: 6),
                               ...liveEntities.map(
                                 (e) => Container(
                                   margin: const EdgeInsets.only(right: 6),
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 4,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: AppColors.statusGreenBg,
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                   child: Text(
                                     '#$e',
-                                    style: const TextStyle(color: AppColors.statusGreen, fontSize: 12, fontWeight: FontWeight.w600),
+                                    style: const TextStyle(
+                                      color: AppColors.statusGreen,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
                                 ),
                               ),
@@ -153,8 +495,6 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                         ),
                         const SizedBox(height: 12),
                       ],
-
-                      // Area di testo libera per documenti lunghi, liste o appunti strutturati
                       Expanded(
                         child: TextField(
                           controller: controller,
@@ -168,61 +508,15 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                             height: 1.5,
                           ),
                           decoration: const InputDecoration(
-                            hintText: 'Scrivi liberamente una nota lunga, una lista o pensieri su persone e progetti...\n\nI soggetti e i collegamenti vengono riconosciuti in automatico.',
-                            hintStyle: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+                            hintText: 'Scrivi appunti, idee o coordinate...',
+                            hintStyle: TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 14,
+                            ),
                             border: InputBorder.none,
                           ),
                         ),
                       ),
-
-                      // Backlinks stile Obsidian (Note collegate automaticamente)
-                      if (connectedNotes.isNotEmpty) ...[
-                        const Divider(color: AppColors.cardSurfaceLight),
-                        const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 6.0),
-                          child: Text(
-                            'CONCETTI E MEMORIE COLLEGATE',
-                            style: TextStyle(
-                              color: AppColors.textSecondary,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.8,
-                            ),
-                          ),
-                        ),
-                        SizedBox(
-                          height: 75,
-                          child: ListView.builder(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: connectedNotes.length,
-                            itemBuilder: (context, idx) {
-                              final linked = connectedNotes[idx];
-                              return GestureDetector(
-                                onTap: () {
-                                  Navigator.pop(ctx);
-                                  _openDocumentEditor(existingNote: linked);
-                                },
-                                child: Container(
-                                  width: 200,
-                                  margin: const EdgeInsets.only(right: 10),
-                                  padding: const EdgeInsets.all(10),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.cardSurface,
-                                    borderRadius: BorderRadius.circular(16),
-                                    border: Border.all(color: AppColors.statusGreen.withOpacity(0.4)),
-                                  ),
-                                  child: Text(
-                                    linked['content'] as String,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(color: AppColors.textPrimary, fontSize: 12),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
                     ],
                   ),
                 ),
@@ -236,28 +530,38 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final pendingCount = _allNotes.where((n) => n['status'] == 'PENDING').length;
-    final indexedCount = _allNotes.where((n) => n['status'] == 'INDEXED').length;
+    final pendingCount = _allNotes
+        .where((n) => n['status'] == 'PENDING')
+        .length;
+    final indexedCount = _allNotes
+        .where((n) => n['status'] == 'INDEXED')
+        .length;
 
-    // Raccoglie tutti i soggetti/persone ricorrenti nel tuo secondo cervello
     final entityCounts = <String, int>{};
     for (final n in _allNotes) {
-      for (final ent in SimilarityEngine.extractEntities(n['content'] as String)) {
+      for (final ent in SimilarityEngine.extractEntities(
+        n['content'] as String,
+      )) {
         entityCounts[ent] = (entityCounts[ent] ?? 0) + 1;
       }
     }
     final topEntities = entityCounts.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
 
-    // Interrogazione in linguaggio naturale
     List<Map<String, dynamic>> displayedNotes = [];
     for (final n in _allNotes) {
       final content = n['content'] as String;
+      final type = _getNoteType(content);
 
-      // Filtro per Soggetto/Persona cliccato
+      if (_selectedTypeFilter != NoteType.all && type != _selectedTypeFilter) {
+        continue;
+      }
+
       if (_selectedEntityFilter != null) {
         final ents = SimilarityEngine.extractEntities(content);
-        if (!ents.any((e) => e.toLowerCase() == _selectedEntityFilter!.toLowerCase())) {
+        if (!ents.any(
+          (e) => e.toLowerCase() == _selectedEntityFilter!.toLowerCase(),
+        )) {
           continue;
         }
       }
@@ -282,25 +586,105 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
     }
 
     if (_searchQuery.trim().isNotEmpty) {
-      displayedNotes.sort((a, b) => (b['_score'] as double).compareTo(a['_score'] as double));
+      displayedNotes.sort(
+        (a, b) => (b['_score'] as double).compareTo(a['_score'] as double),
+      );
     }
 
     return Scaffold(
       backgroundColor: Colors.transparent,
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openDocumentEditor(),
+      floatingActionButton: SpeedDial(
+        icon: Icons.add_rounded,
+        activeIcon: Icons.close_rounded,
         backgroundColor: AppColors.accentCoralDark,
         foregroundColor: AppColors.accentCoral,
-        elevation: 2,
-        icon: const Icon(Icons.note_add_outlined),
-        label: const Text('Nuova Pagina', style: TextStyle(fontWeight: FontWeight.bold)),
+        activeBackgroundColor: AppColors.cardSurface,
+        activeForegroundColor: AppColors.accentCoral,
+        spacing: 12,
+        spaceBetweenChildren: 10,
+        direction: SpeedDialDirection.up,
+        renderOverlay: true,
+        overlayColor: Colors.black,
+        overlayOpacity: 0.5,
+        elevation: 4,
+        animationDuration: const Duration(milliseconds: 180),
+        onPress: () => _openDocumentEditor(),
+        children: [
+          SpeedDialChild(
+            child: const Icon(
+              Icons.edit_note_rounded,
+              color: AppColors.accentCoral,
+            ),
+            backgroundColor: AppColors.cardSurface,
+            label: 'Nota Testuale',
+            labelStyle: const TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+            labelBackgroundColor: AppColors.cardSurface,
+            onTap: () {
+              HapticFeedback.mediumImpact();
+              _openDocumentEditor();
+            },
+          ),
+          SpeedDialChild(
+            child: const Icon(
+              Icons.camera_alt_outlined,
+              color: AppColors.statusGreen,
+            ),
+            backgroundColor: AppColors.cardSurface,
+            label: 'Scatta Foto / OCR',
+            labelStyle: const TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+            labelBackgroundColor: AppColors.cardSurface,
+            onTap: () {
+              HapticFeedback.mediumImpact();
+              _handleImageCapture(ImageSource.camera);
+            },
+          ),
+          SpeedDialChild(
+            child: const Icon(
+              Icons.image_outlined,
+              color: AppColors.statusGreen,
+            ),
+            backgroundColor: AppColors.cardSurface,
+            label: 'Da Galleria',
+            labelStyle: const TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+            labelBackgroundColor: AppColors.cardSurface,
+            onTap: () {
+              HapticFeedback.mediumImpact();
+              _handleImageCapture(ImageSource.gallery);
+            },
+          ),
+          SpeedDialChild(
+            child: const Icon(
+              Icons.mic_none_rounded,
+              color: AppColors.accentCoral,
+            ),
+            backgroundColor: AppColors.cardSurface,
+            label: 'Nota Vocale',
+            labelStyle: const TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+            labelBackgroundColor: AppColors.cardSurface,
+            onTap: () {
+              HapticFeedback.mediumImpact();
+              _showAudioRecorderSheet();
+            },
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Banner Stato Coda + Forza Sync
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -313,10 +697,14 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.bolt, color: AppColors.statusGreen, size: 18),
+                      const Icon(
+                        Icons.bolt,
+                        color: AppColors.statusGreen,
+                        size: 18,
+                      ),
                       const SizedBox(width: 8),
                       Text(
-                        'In coda: $pendingCount • Collegamenti: ${_allConnections.length}',
+                        'In coda: $pendingCount • Connessioni: ${_allConnections.length}',
                         style: const TextStyle(
                           color: AppColors.statusGreen,
                           fontWeight: FontWeight.w600,
@@ -332,7 +720,10 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                       await _refreshNotes();
                     },
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 5,
+                      ),
                       decoration: BoxDecoration(
                         color: AppColors.statusGreen.withOpacity(0.25),
                         borderRadius: BorderRadius.circular(14),
@@ -351,17 +742,37 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
               ),
             ),
             const SizedBox(height: 10),
-
-            // Barra di ricerca a linguaggio naturale
             SemanticSearchBar(
               onSearchChanged: (val) => setState(() => _searchQuery = val),
             ),
-
-            // Barra dei Soggetti / Persone riconosciute automaticamente
+            const SizedBox(height: 10),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _buildTypeChip('Tutte', NoteType.all, Icons.notes_rounded),
+                  _buildTypeChip(
+                    'Testo',
+                    NoteType.text,
+                    Icons.description_outlined,
+                  ),
+                  _buildTypeChip(
+                    'Immagini',
+                    NoteType.image,
+                    Icons.image_outlined,
+                  ),
+                  _buildTypeChip(
+                    'Vocali',
+                    NoteType.audio,
+                    Icons.mic_none_rounded,
+                  ),
+                ],
+              ),
+            ),
             if (topEntities.isNotEmpty) ...[
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               SizedBox(
-                height: 32,
+                height: 30,
                 child: ListView.builder(
                   scrollDirection: Axis.horizontal,
                   itemCount: topEntities.length,
@@ -377,21 +788,32 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                         });
                       },
                       child: Container(
-                        margin: const EdgeInsets.only(right: 8),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        margin: const EdgeInsets.only(right: 6),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
                         decoration: BoxDecoration(
-                          color: isSelected ? AppColors.accentCoralDark : AppColors.cardSurface,
-                          borderRadius: BorderRadius.circular(16),
+                          color: isSelected
+                              ? AppColors.accentCoralDark
+                              : AppColors.cardSurface,
+                          borderRadius: BorderRadius.circular(14),
                           border: Border.all(
-                            color: isSelected ? AppColors.accentCoral : AppColors.cardSurfaceLight,
+                            color: isSelected
+                                ? AppColors.accentCoral
+                                : AppColors.cardSurfaceLight,
                           ),
                         ),
                         child: Text(
-                          '$ent ($count)',
+                          '#$ent ($count)',
                           style: TextStyle(
-                            color: isSelected ? AppColors.accentCoral : AppColors.textSecondary,
-                            fontSize: 12,
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            color: isSelected
+                                ? AppColors.accentCoral
+                                : AppColors.textSecondary,
+                            fontSize: 11,
+                            fontWeight: isSelected
+                                ? FontWeight.bold
+                                : FontWeight.normal,
                           ),
                         ),
                       ),
@@ -401,17 +823,18 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
               ),
             ],
             const SizedBox(height: 12),
-
-            // Lista Documenti (Swipe sia a destra che a sinistra per eliminare)
             Expanded(
               child: displayedNotes.isEmpty
                   ? Center(
                       child: Text(
                         _searchQuery.isEmpty
-                            ? 'Il tuo archivio è vuoto.\nTocca "Nuova Pagina" per iniziare.'
-                            : 'Nessuna risposta trovata per questa domanda.',
+                            ? 'Nessuna memoria presente.\nTocca "+" per aggiungere una nota.'
+                            : 'Nessun risultato trovato.',
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 13,
+                        ),
                       ),
                     )
                   : ListView.builder(
@@ -423,30 +846,29 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                         final String content = note['content'] as String;
                         final double? matchScore = note['_score'] as double?;
                         final String? snippet = note['_snippet'] as String?;
-                        final entities = SimilarityEngine.extractEntities(content);
+                        final entities = SimilarityEngine.extractEntities(
+                          content,
+                        );
 
-                        // Conta quanti link ha questa nota
-                        final linkCount = _allConnections.where(
-                          (c) => c['source_id'] == noteId || c['target_id'] == noteId,
-                        ).length;
+                        final noteType = _getNoteType(content);
+                        final parsed = _parseNoteDetails(content);
 
                         return Dismissible(
                           key: ValueKey(noteId),
-                          direction: DismissDirection.horizontal, // Swipe da entrambi i lati!
-                          onDismissed: (_) async {
-                            HapticFeedback.heavyImpact();
-                            await _noteDao.deleteNote(noteId);
-                            await _refreshNotes();
-                          },
+                          direction: DismissDirection.horizontal,
+                          onDismissed: (_) => _deleteNoteWithUndo(note),
                           background: Container(
                             margin: const EdgeInsets.only(bottom: 12),
                             padding: const EdgeInsets.symmetric(horizontal: 20),
                             alignment: Alignment.centerLeft,
                             decoration: BoxDecoration(
                               color: AppColors.accentCoralDark,
-                              borderRadius: BorderRadius.circular(22),
+                              borderRadius: BorderRadius.circular(20),
                             ),
-                            child: const Icon(Icons.delete_sweep_outlined, color: AppColors.accentCoral),
+                            child: const Icon(
+                              Icons.delete_sweep_outlined,
+                              color: AppColors.accentCoral,
+                            ),
                           ),
                           secondaryBackground: Container(
                             margin: const EdgeInsets.only(bottom: 12),
@@ -454,123 +876,25 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                             alignment: Alignment.centerRight,
                             decoration: BoxDecoration(
                               color: AppColors.accentCoralDark,
-                              borderRadius: BorderRadius.circular(22),
+                              borderRadius: BorderRadius.circular(20),
                             ),
-                            child: const Icon(Icons.delete_sweep_outlined, color: AppColors.accentCoral),
+                            child: const Icon(
+                              Icons.delete_sweep_outlined,
+                              color: AppColors.accentCoral,
+                            ),
                           ),
                           child: GestureDetector(
-                            onTap: () => _openDocumentEditor(existingNote: note),
-                            child: Container(
-                              margin: const EdgeInsets.only(bottom: 12),
-                              padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                color: AppColors.cardSurface,
-                                borderRadius: BorderRadius.circular(22),
-                                border: Border.all(
-                                  color: snippet != null
-                                      ? AppColors.accentCoral.withOpacity(0.5)
-                                      : Colors.transparent,
-                                ),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  // Risposta estratta in evidenza quando fai una domanda
-                                  if (snippet != null && _searchQuery.isNotEmpty) ...[
-                                    Container(
-                                      width: double.infinity,
-                                      margin: const EdgeInsets.only(bottom: 10),
-                                      padding: const EdgeInsets.all(10),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.accentCoralDark.withOpacity(0.45),
-                                        borderRadius: BorderRadius.circular(14),
-                                      ),
-                                      child: Row(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          const Icon(Icons.auto_awesome, color: AppColors.accentCoral, size: 16),
-                                          const SizedBox(width: 8),
-                                          Expanded(
-                                            child: Text(
-                                              snippet,
-                                              style: const TextStyle(
-                                                color: AppColors.accentCoral,
-                                                fontWeight: FontWeight.w600,
-                                                fontSize: 13,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-
-                                  // Anteprima del documento (anche se molto lungo)
-                                  Text(
-                                    content,
-                                    maxLines: 4,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: AppColors.textPrimary,
-                                      fontSize: 14,
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 10),
-
-                                  // Footer card: Soggetti estratti + Numero di collegamenti
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Expanded(
-                                        child: Wrap(
-                                          spacing: 6,
-                                          runSpacing: 4,
-                                          children: entities.take(3).map((e) {
-                                            return Container(
-                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                              decoration: BoxDecoration(
-                                                color: AppColors.cardSurfaceLight,
-                                                borderRadius: BorderRadius.circular(8),
-                                              ),
-                                              child: Text(
-                                                '#$e',
-                                                style: const TextStyle(
-                                                  color: AppColors.textSecondary,
-                                                  fontSize: 11,
-                                                ),
-                                              ),
-                                            );
-                                          }).toList(),
-                                        ),
-                                      ),
-                                      Row(
-                                        children: [
-                                          if (linkCount > 0) ...[
-                                            const Icon(Icons.hub_outlined, size: 14, color: AppColors.statusGreen),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              '$linkCount link',
-                                              style: const TextStyle(color: AppColors.statusGreen, fontSize: 11),
-                                            ),
-                                          ],
-                                          if (matchScore != null && _searchQuery.isNotEmpty) ...[
-                                            const SizedBox(width: 8),
-                                            Text(
-                                              '${(matchScore * 100).clamp(1, 99).toInt()}%',
-                                              style: const TextStyle(
-                                                color: AppColors.accentCoral,
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ],
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
+                            onTap: () =>
+                                _openDocumentEditor(existingNote: note),
+                            child: _buildKeepCard(
+                              type: noteType,
+                              title: parsed['title']!,
+                              body: parsed['body']!,
+                              imagePath: parsed['imagePath'],
+                              audioPath: parsed['audioPath'],
+                              snippet: snippet,
+                              matchScore: matchScore,
+                              entities: entities,
                             ),
                           ),
                         );
@@ -579,6 +903,249 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildTypeChip(String label, NoteType type, IconData icon) {
+    final isSelected = _selectedTypeFilter == type;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() => _selectedTypeFilter = type);
+      },
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? AppColors.accentCoralDark : AppColors.cardSurface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected
+                ? AppColors.accentCoral
+                : AppColors.cardSurfaceLight,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              size: 14,
+              color: isSelected
+                  ? AppColors.accentCoral
+                  : AppColors.textSecondary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected
+                    ? AppColors.accentCoral
+                    : AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildKeepCard({
+    required NoteType type,
+    required String title,
+    required String body,
+    required String? imagePath,
+    required String? audioPath,
+    required String? snippet,
+    required double? matchScore,
+    required List<String> entities,
+  }) {
+    IconData typeIcon;
+    Color accentColor;
+
+    switch (type) {
+      case NoteType.audio:
+        typeIcon = Icons.mic_none_rounded;
+        accentColor = AppColors.accentCoral;
+        break;
+      case NoteType.image:
+        typeIcon = Icons.camera_alt_outlined;
+        accentColor = AppColors.statusGreen;
+        break;
+      case NoteType.text:
+      default:
+        typeIcon = Icons.article_outlined;
+        accentColor = AppColors.textSecondary;
+        break;
+    }
+
+    final bool isThisAudioPlaying =
+        _isPlaying && _currentlyPlayingPath == audioPath;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardSurface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: snippet != null
+              ? AppColors.accentCoral.withOpacity(0.5)
+              : AppColors.cardSurfaceLight,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Icon(typeIcon, size: 16, color: accentColor),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
+                ),
+              ),
+              if (matchScore != null && _searchQuery.isNotEmpty)
+                Text(
+                  '${(matchScore * 100).clamp(1, 99).toInt()}%',
+                  style: const TextStyle(
+                    color: AppColors.accentCoral,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+            ],
+          ),
+          if (imagePath != null && File(imagePath).existsSync()) ...[
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.file(
+                File(imagePath),
+                height: 160,
+                width: double.infinity,
+                fit: BoxFit.cover,
+              ),
+            ),
+          ],
+          if (audioPath != null && File(audioPath).existsSync()) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: Icon(
+                      isThisAudioPlaying
+                          ? Icons.pause_circle_filled_rounded
+                          : Icons.play_circle_fill_rounded,
+                      color: AppColors.accentCoral,
+                      size: 32,
+                    ),
+                    onPressed: () => _toggleAudioPlayback(audioPath),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isThisAudioPlaying
+                              ? 'In riproduzione...'
+                              : 'Nota Vocale',
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        LinearProgressIndicator(
+                          value: isThisAudioPlaying ? null : 0.0,
+                          backgroundColor: AppColors.cardSurfaceLight,
+                          color: AppColors.accentCoral,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (snippet != null && _searchQuery.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.accentCoralDark.withOpacity(0.4),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                snippet,
+                style: const TextStyle(
+                  color: AppColors.accentCoral,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+          if (body.isNotEmpty && body != 'Nessun testo allegato') ...[
+            const SizedBox(height: 8),
+            Text(
+              body,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+          ],
+          if (entities.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: entities.take(4).map((e) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.cardSurfaceLight,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '#$e',
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 11,
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ],
+        ],
       ),
     );
   }

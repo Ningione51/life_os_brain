@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_theme.dart';
 import 'features/brain_input/presentation/quick_note_screen.dart';
@@ -63,7 +64,10 @@ class _MainShellState extends State<MainShell> {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 10.0),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.cardSurface,
                   borderRadius: BorderRadius.circular(24),
@@ -82,15 +86,9 @@ class _MainShellState extends State<MainShell> {
             // Contenuto con Swipe Orizzontale fluido tra le pagine
             Expanded(
               child: PageView(
+                physics: const NeverScrollableScrollPhysics(), // Disabilita lo swipe da destra/sinistra
                 controller: _pageController,
-                onPageChanged: (index) {
-                  HapticFeedback.selectionClick();
-                  setState(() => _selectedIndex = index);
-                },
-                children: const [
-                  QuickNoteScreen(),
-                  MemoryGraphScreen(),
-                ],
+                children: const [QuickNoteScreen(), MemoryGraphScreen()],
               ),
             ),
 
@@ -140,7 +138,9 @@ class _MainShellState extends State<MainShell> {
             Icon(
               icon,
               size: 20,
-              color: isSelected ? AppColors.accentCoral : AppColors.textSecondary,
+              color: isSelected
+                  ? AppColors.accentCoral
+                  : AppColors.textSecondary,
             ),
             AnimatedSize(
               duration: const Duration(milliseconds: 220),
