@@ -1,44 +1,58 @@
 name: life_os_brain
-description: "A new Flutter project."
-publish_to: "none"
-
+description: "Life_Os: Brain - Seconda mente locale e crittografata."
+publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.14.0-211.1.beta
+  sdk: '>=3.2.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
 
-  # Archiviazione Sicura Chiavi DB
+  # UI & Animazioni
+  flutter_animate: ^4.5.2
+  lucide_icons: ^0.257.0
+  flutter_speed_dial: ^7.0.0
+  cupertino_icons: ^1.0.8
+
+  # State Management
+  flutter_riverpod: ^2.6.1
+
+  # Database Cifrato & Storage Locale
+  sqflite_sqlcipher: ^3.1.0+1
   flutter_secure_storage: ^9.2.2
+  path_provider: ^2.1.5
+  path: ^1.9.0
 
-  # ML Kit Packages (allineati)
-  google_mlkit_text_recognition: ^0.15.1
-  google_mlkit_image_labeling: ^0.14.0
+  # Vision AI & OCR (100% On-Device)
+  image_picker: ^1.1.2
+  google_mlkit_text_recognition: ^0.13.1
+  google_mlkit_image_labeling: ^0.12.0
 
-  # Trascrizione Vocale
+  # Audio & Speech-to-Text
+  record: ^5.2.0
+  audioplayers: ^6.1.0
   speech_to_text: ^7.0.0
 
-  # Altre dipendenze
-  flutter_speed_dial: ^7.0.0
-  audioplayers: ^6.0.0
-  record: 5.2.1
-  image_picker: ^1.0.7
-  path_provider: ^2.1.2
-  sqflite_sqlcipher: ^3.1.0+1
-  flutter_riverpod: ^2.5.1
-
+# Blocca l'interfaccia alla versione compatibile con record 5.x per evitare l'errore su startStream/hasPermission
 dependency_overrides:
   record_platform_interface: 1.2.0
+  record_linux: 0.7.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.13.1
 
 flutter_launcher_icons:
   android: true
   image_path: "assets/icon.png"
   adaptive_icon_background: "#0D0D0D"
   adaptive_icon_foreground: "assets/icon.png"
-  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icon.png

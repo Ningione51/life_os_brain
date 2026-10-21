@@ -2,7 +2,7 @@ import 'package:sqflite_sqlcipher/sqflite.dart';
 import 'cipher_database.dart';
 
 class NoteDao {
-  Future<void> insertQuickNote(String content) async {
+  Future<String> insertQuickNote(String content) async {
     final db = await CipherDatabase.instance.database;
     final id = DateTime.now().millisecondsSinceEpoch.toString();
 
@@ -16,11 +16,27 @@ class NoteDao {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    return id;
+  }
+
+  /// Ripristina una nota appena eliminata tramite "ANNULLA"
+  Future<void> restoreNote(Map<String, dynamic> noteData) async {
+    final db = await CipherDatabase.instance.database;
+    await db.insert(
+      'notes',
+      {
+        'id': noteData['id'],
+        'content': noteData['content'],
+        'vector_json': noteData['vector_json'],
+        'status': 'PENDING',
+        'created_at': noteData['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
   Future<void> updateNote(String id, String newContent) async {
     final db = await CipherDatabase.instance.database;
-    // Rimuove le vecchie connessioni e rimette in PENDING per ricalcolare i link
     await db.delete(
       'note_connections',
       where: 'source_id = ? OR target_id = ?',

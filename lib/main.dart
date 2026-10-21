@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_theme.dart';
 import 'features/brain_input/presentation/quick_note_screen.dart';
@@ -8,7 +8,7 @@ import 'features/graph_view/presentation/memory_graph_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const LifeOsBrainApp());
+  runApp(const ProviderScope(child: LifeOsBrainApp()));
 }
 
 class LifeOsBrainApp extends StatelessWidget {
@@ -48,7 +48,7 @@ class _MainShellState extends State<MainShell> {
       setState(() => _selectedIndex = index);
       _pageController.animateToPage(
         index,
-        duration: const Duration(milliseconds: 280),
+        duration: const Duration(milliseconds: 260),
         curve: Curves.easeOutCubic,
       );
     }
@@ -64,10 +64,7 @@ class _MainShellState extends State<MainShell> {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 10.0),
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 8,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                 decoration: BoxDecoration(
                   color: AppColors.cardSurface,
                   borderRadius: BorderRadius.circular(24),
@@ -83,16 +80,19 @@ class _MainShellState extends State<MainShell> {
               ),
             ),
 
-            // Contenuto con Swipe Orizzontale fluido tra le pagine
+            // Contenuto con swipe orizzontale bloccato per non interferire con Dismissible e Grafo
             Expanded(
               child: PageView(
-                physics: const NeverScrollableScrollPhysics(), // Disabilita lo swipe da destra/sinistra
                 controller: _pageController,
-                children: const [QuickNoteScreen(), MemoryGraphScreen()],
+                physics: const NeverScrollableScrollPhysics(),
+                children: const [
+                  QuickNoteScreen(),
+                  MemoryGraphScreen(),
+                ],
               ),
             ),
 
-            // Bottom Pill Navigation Bar con testo a scomparsa
+            // Bottom Pill Navigation Bar
             Padding(
               padding: const EdgeInsets.only(bottom: 16.0, top: 8.0),
               child: Container(
@@ -138,9 +138,7 @@ class _MainShellState extends State<MainShell> {
             Icon(
               icon,
               size: 20,
-              color: isSelected
-                  ? AppColors.accentCoral
-                  : AppColors.textSecondary,
+              color: isSelected ? AppColors.accentCoral : AppColors.textSecondary,
             ),
             AnimatedSize(
               duration: const Duration(milliseconds: 220),
