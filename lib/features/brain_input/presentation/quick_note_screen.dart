@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_mlkit_image_labeling/google_mlkit_image_labeling.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
@@ -28,14 +30,16 @@ class QuickNoteScreen extends StatefulWidget {
 
 class _QuickNoteScreenState extends State<QuickNoteScreen> {
   final NoteDao _noteDao = NoteDao();
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+
   List<Map<String, dynamic>> _allNotes = [];
   List<Map<String, dynamic>> _allConnections = [];
 
   String _searchQuery = '';
   String? _selectedEntityFilter;
   NoteTypeFilter _selectedTypeFilter = NoteTypeFilter.all;
+  String? _geminiApiKey;
 
-  // Audio Recording, Playback & STT
   final AudioRecorder _audioRecorder = AudioRecorder();
   final AudioPlayer _audioPlayer = AudioPlayer();
   final stt.SpeechToText _speech = stt.SpeechToText();
@@ -44,45 +48,35 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
 
   static const Map<String, String> _visionLabelTranslations = {
     'Person': 'Persona',
-    'Human': 'Essere umano',
-    'Smile': 'Volto sorridente',
-    'Selfie': 'Autoritratto / Selfie',
+    'Smile': 'Sorriso',
+    'Selfie': 'Selfie',
     'Cat': 'Gatto',
     'Dog': 'Cane',
-    'Pet': 'Animale domestico',
-    'Animal': 'Animale',
-    'Plant': 'Pianta / Natura',
-    'Tree': 'Albero',
+    'Pet': 'Animale',
+    'Plant': 'Pianta',
     'Flower': 'Fiore',
-    'Sky': 'Cielo aperto',
-    'Mountain': 'Montagna / Paesaggio',
-    'Water': 'Acqua / Mare',
-    'Food': 'Cibo / Pietanza',
+    'Food': 'Cibo',
     'Dish': 'Piatto',
-    'Cuisine': 'Cucina',
     'Coffee': 'Caffè',
     'Pizza': 'Pizza',
     'Building': 'Edificio',
-    'House': 'Casa',
-    'Room': 'Stanza / Interno',
+    'Room': 'Stanza',
     'Furniture': 'Arredamento',
-    'Table': 'Tavolo / Scrivania',
-    'Chair': 'Sedia',
-    'Computer': 'Computer / PC',
+    'Table': 'Scrivania',
+    'Computer': 'Computer',
     'Laptop': 'Portatile',
     'Mobile phone': 'Smartphone',
-    'Screen': 'Schermo / Monitor',
-    'Keyboard': 'Tastiera',
-    'Electronics': 'Elettronica',
-    'Text': 'Documento / Testo',
-    'Paper': 'Foglio / Appunti',
+    'Screen': 'Schermo',
+    'Text': 'Documento',
+    'Paper': 'Appunti',
     'Book': 'Libro',
-    'Handwriting': 'Scrittura a mano',
-    'Car': 'Automobile',
-    'Vehicle': 'Veicolo',
-    'Clothing': 'Abbigliamento / Outfit',
-    'Game': 'Videogioco',
+    'Toy': 'Modellino',
+    'Lego': 'Lego',
+    'Robot': 'Robot',
   };
+
+  // Etichette ML Kit troppo generiche/fuorvianti da ignorare su piccoli oggetti
+  static const Set<String> _noisyLabels = {'car', 'vehicle', 'motor vehicle', 'automotive design'};
 
   @override
   void initState() {
@@ -99,6 +93,7 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
   }
 
   Future<void> _initAndRefresh() async {
+    _geminiApiKey = await _secureStorage.read(key: 'gemini_api_key');
     await BackgroundWorker.processPendingNotes();
     await _refreshNotes();
   }
@@ -121,7 +116,6 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
     }
   }
 
-  /// Salva una nota e ricalcola immediatamente i vettori e i collegamenti
   Future<void> _saveAndIndexNote(String content, {String? existingId}) async {
     if (content.trim().isEmpty) return;
     if (existingId != null) {
@@ -133,7 +127,6 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
     await _refreshNotes();
   }
 
-  /// Trova tutte le altre note collegate a una specifica nota
   List<Map<String, dynamic>> _getLinkedNotesFor(String noteId) {
     final linkedIds = <String>{};
     for (final c in _allConnections) {
@@ -156,27 +149,209 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
   bool _isImageNote(String content) => _extractImagePath(content) != null;
   bool _isAudioNote(String content) => _extractAudioPath(content) != null;
 
-  String _translateLabel(String englishLabel) {
-    for (final entry in _visionLabelTranslations.entries) {
-      if (englishLabel.toLowerCase() == entry.key.toLowerCase() ||
-          englishLabel.toLowerCase().contains(entry.key.toLowerCase())) {
-        return entry.value;
+  /// Menu che si apre TENENDO PREMUTO il pulsante "+ Nuova Nota"
+  void _showLongPressCreationMenu() {
+    HapticFeedback.heavyImpact();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.cardSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(left: 12, bottom: 12),
+                  child: Text(
+                    'Inserimento Avanzato Multimodal',
+                    style: TextStyle(color: AppColors.textPrimary, fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.camera_alt_outlined, color: AppColors.statusGreen),
+                  title: const Text('Scatta Foto (Vision AI + OCR)', style: TextStyle(color: AppColors.textPrimary)),
+                  subtitle: Text(
+                    _geminiApiKey != null && _geminiApiKey!.isNotEmpty
+                        ? 'AI Cloud Attiva (Riconoscimento preciso via Internet)'
+                        : 'Modalità Offline Locale (Configura AI Cloud per più precisione)',
+                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 11.5),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _handleImageCapture(ImageSource.camera);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library_outlined, color: AppColors.statusGreen),
+                  title: const Text('Scegli Foto dalla Galleria', style: TextStyle(color: AppColors.textPrimary)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _handleImageCapture(ImageSource.gallery);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.mic_rounded, color: AppColors.accentCoral),
+                  title: const Text('Registra Nota Vocale', style: TextStyle(color: AppColors.textPrimary)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showAudioRecorderSheet();
+                  },
+                ),
+                const Divider(color: AppColors.cardSurfaceLight),
+                ListTile(
+                  leading: const Icon(Icons.auto_awesome_rounded, color: AppColors.accentCoral),
+                  title: const Text('Imposta AI Cloud (Gemini API Gratuita)', style: TextStyle(color: AppColors.textPrimary)),
+                  subtitle: const Text(
+                    'Permette di riconoscere oggetti specifici (es. Wall-E, modelli, libri) via Internet',
+                    style: TextStyle(color: AppColors.textSecondary, fontSize: 11.5),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showCloudAiSettingsDialog();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Finestra per inserire la chiave API gratuita di Google Gemini (per Vision AI precisa via Internet)
+  Future<void> _showCloudAiSettingsDialog() async {
+    final keyController = TextEditingController(text: _geminiApiKey ?? '');
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.cardSurface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          title: const Row(
+            children: [
+              Icon(Icons.auto_awesome, color: AppColors.accentCoral, size: 20),
+              SizedBox(width: 8),
+              Text('Vision AI via Internet', style: TextStyle(color: AppColors.textPrimary, fontSize: 16)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Inserisci una API Key gratuita di Google AI Studio (Gemini 2.5 Flash) per riconoscere con precisione qualsiasi oggetto nelle foto (es. personaggi, LEGO, piatti, schemi) quando sei connesso a Internet.\nSe sei offline, l\'app userà automaticamente ML Kit locale.',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 12.5, height: 1.4),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: keyController,
+                style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+                decoration: InputDecoration(
+                  hintText: 'AIzaSy...',
+                  hintStyle: const TextStyle(color: AppColors.textSecondary),
+                  filled: true,
+                  fillColor: AppColors.background,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Annulla', style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accentCoralDark,
+                foregroundColor: AppColors.accentCoral,
+              ),
+              onPressed: () async {
+                final newKey = keyController.text.trim();
+                await _secureStorage.write(key: 'gemini_api_key', value: newKey);
+                setState(() => _geminiApiKey = newKey);
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+              child: const Text('Salva Chiave'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Chiama Gemini 2.5 Flash via Internet se la chiave è presente; altrimenti ritorna null e usa il fallback offline
+  Future<String?> _analyzeImageWithCloudAi(File imageFile) async {
+    if (_geminiApiKey == null || _geminiApiKey!.trim().isEmpty) return null;
+    try {
+      final bytes = await imageFile.readAsBytes();
+      final base64Image = base64Encode(bytes);
+
+      final url = Uri.parse(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${_geminiApiKey!.trim()}',
+      );
+
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 12);
+      final request = await client.postUrl(url);
+      request.headers.set(HttpHeaders.contentTypeHeader, 'application/json; charset=UTF-8');
+
+      final payload = jsonEncode({
+        'contents': [
+          {
+            'parts': [
+              {
+                'text':
+                    'Descrivi in italiano in modo conciso ma preciso cosa vedi in questa foto (identifica il soggetto specifico, es. personaggio, modello LEGO, documento, coordinate o oggetto) e concludi con 3 o 4 hashtag pertinenti in italiano (es. #WallE #Lego #Robot). Non usare markdown.'
+              },
+              {
+                'inline_data': {
+                  'mime_type': 'image/jpeg',
+                  'data': base64Image,
+                }
+              }
+            ]
+          }
+        ]
+      });
+
+      request.add(utf8.encode(payload));
+      final response = await request.close();
+      if (response.statusCode == 200) {
+        final responseBody = await response.transform(utf8.decoder).join();
+        final decoded = jsonDecode(responseBody);
+        final text = decoded['candidates']?[0]?['content']?['parts']?[0]?['text'] as String?;
+        return text?.trim();
       }
+    } catch (_) {
+      // Nessuna connessione internet o errore API -> passa silenziosamente all'OCR/Vision locale
     }
-    return englishLabel;
+    return null;
   }
 
   Future<void> _handleImageCapture(ImageSource source) async {
     try {
       final picker = ImagePicker();
-      final pickedFile = await picker.pickImage(source: source, imageQuality: 82);
+      final pickedFile = await picker.pickImage(source: source, maxWidth: 1280, imageQuality: 80);
       if (pickedFile == null) return;
 
       HapticFeedback.mediumImpact();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Analisi visiva e OCR del testo in corso...'),
+          content: Text(
+            (_geminiApiKey != null && _geminiApiKey!.isNotEmpty)
+                ? 'Analisi intelligente AI + OCR in corso...'
+                : 'Scansione OCR e Vision locale in corso...',
+          ),
           behavior: SnackBarBehavior.floating,
           backgroundColor: AppColors.cardSurfaceLight,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -188,53 +363,50 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
       final fileName = 'img_${DateTime.now().millisecondsSinceEpoch}${p.extension(pickedFile.path)}';
       final savedImage = await File(pickedFile.path).copy('${appDir.path}/$fileName');
 
-      final inputImage = InputImage.fromFilePath(savedImage.path);
+      // 1. Prova prima con l'AI Cloud (se configurata e connesso a Internet)
+      String? cloudDescription = await _analyzeImageWithCloudAi(savedImage);
 
-      // 1. OCR
-      final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
-      await textRecognizer.close();
-      final ocrText = recognizedText.text.trim();
+      String suggestedText = '';
+      if (cloudDescription != null && cloudDescription.isNotEmpty) {
+        suggestedText = cloudDescription;
+      } else {
+        // 2. Fallback 100% Offline (OCR + ML Kit filtrato dai falsi positivi come Car/Vehicle)
+        final inputImage = InputImage.fromFilePath(savedImage.path);
 
-      // 2. Vision AI
-      final imageLabeler = ImageLabeler(options: ImageLabelerOptions(confidenceThreshold: 0.45));
-      final List<ImageLabel> labels = await imageLabeler.processImage(inputImage);
-      await imageLabeler.close();
+        final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+        final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+        await textRecognizer.close();
+        final ocrText = recognizedText.text.trim();
 
-      final translatedElements = <String>[];
-      final hashtags = <String>{'#Foto'};
+        final imageLabeler = ImageLabeler(options: ImageLabelerOptions(confidenceThreshold: 0.62));
+        final List<ImageLabel> labels = await imageLabeler.processImage(inputImage);
+        await imageLabeler.close();
 
-      for (final l in labels.take(6)) {
-        final itName = _translateLabel(l.label);
-        final pct = (l.confidence * 100).toInt();
-        translatedElements.add('$itName ($pct%)');
-        final cleanTag = itName.split('/').first.trim().replaceAll(RegExp(r'[^\wàèéìòùÀÈÉÌÒÙ]'), '');
-        if (cleanTag.length >= 3) hashtags.add('#$cleanTag');
+        final cleanTags = <String>{};
+        for (final l in labels) {
+          if (_noisyLabels.contains(l.label.toLowerCase())) continue;
+          final itName = _visionLabelTranslations[l.label] ?? l.label;
+          final tag = itName.replaceAll(RegExp(r'[^\wàèéìòùÀÈÉÌÒÙ]'), '');
+          if (tag.length >= 3) cleanTags.add('#$tag');
+        }
+
+        final buf = StringBuffer();
+        if (ocrText.isNotEmpty) {
+          buf.writeln(ocrText);
+        }
+        if (cleanTags.isNotEmpty) {
+          buf.write(cleanTags.take(3).join(' '));
+        }
+        suggestedText = buf.toString().trim();
       }
 
-      String sceneSummary = 'Foto salvata in memoria';
-      if (ocrText.length > 35) {
-        sceneSummary = 'Documento / Pagina di testo acquisita';
-        hashtags.add('#Documento');
-      } else if (RegExp(r'[-+]?\d+\s*[,/]\s*[-+]?\d+').hasMatch(ocrText)) {
-        sceneSummary = 'Immagine con coordinate / riferimenti numerici';
-        hashtags.add('#Coordinate');
-      } else if (labels.isNotEmpty) {
-        final mainObj = labels.take(3).map((l) => _translateLabel(l.label).toLowerCase()).join(', ');
-        sceneSummary = 'Immagine raffigurante: $mainObj';
+      // 3. Apre subito l'editor con la foto e la descrizione precompilata, così puoi verificare/personalizzare (es. scrivere "Walle")!
+      if (mounted) {
+        await _openDocumentEditor(
+          initialImagePath: savedImage.path,
+          initialText: suggestedText,
+        );
       }
-
-      final buffer = StringBuffer('[[IMG:${savedImage.path}]]\n');
-      buffer.writeln('📸 $sceneSummary');
-      if (translatedElements.isNotEmpty) {
-        buffer.writeln('👁️ Elementi riconosciuti: ${translatedElements.join(' • ')}');
-      }
-      if (ocrText.isNotEmpty) {
-        buffer.writeln('\n📝 Testo letto nella foto:\n$ocrText');
-      }
-      buffer.writeln('\n${hashtags.join(' ')}');
-
-      await _saveAndIndexNote(buffer.toString());
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -596,15 +768,19 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
     );
   }
 
-  Future<void> _openDocumentEditor({Map<String, dynamic>? existingNote}) async {
+  Future<void> _openDocumentEditor({
+    Map<String, dynamic>? existingNote,
+    String? initialImagePath,
+    String? initialText,
+  }) async {
     HapticFeedback.mediumImpact();
     final isEditing = existingNote != null;
     final String rawExisting = isEditing ? (existingNote['content'] as String) : '';
-    final String? imgPath = _extractImagePath(rawExisting);
+    final String? imgPath = initialImagePath ?? _extractImagePath(rawExisting);
     final String? audioPath = _extractAudioPath(rawExisting);
 
     final controller = TextEditingController(
-      text: SimilarityEngine.stripMediaMarkers(rawExisting),
+      text: initialText ?? SimilarityEngine.stripMediaMarkers(rawExisting),
     );
     final String? noteId = isEditing ? (existingNote['id'] as String) : null;
     final linkedNotes = isEditing ? _getLinkedNotesFor(noteId!) : <Map<String, dynamic>>[];
@@ -678,14 +854,44 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (imgPath != null && File(imgPath).existsSync()) ...[
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(18),
-                          child: Image.file(
-                            File(imgPath),
-                            height: 180,
-                            width: double.infinity,
-                            fit: BoxFit.cover,
-                          ),
+                        Stack(
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(18),
+                              child: Image.file(
+                                File(imgPath),
+                                height: 180,
+                                width: double.infinity,
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                            Positioned(
+                              bottom: 8,
+                              right: 8,
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.cardSurface.withOpacity(0.9),
+                                  foregroundColor: AppColors.accentCoral,
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                ),
+                                icon: const Icon(Icons.auto_awesome, size: 16),
+                                label: const Text('Analizza con AI Cloud', style: TextStyle(fontSize: 12)),
+                                onPressed: () async {
+                                  if (_geminiApiKey == null || _geminiApiKey!.isEmpty) {
+                                    await _showCloudAiSettingsDialog();
+                                  }
+                                  if (_geminiApiKey != null && _geminiApiKey!.isNotEmpty) {
+                                    final desc = await _analyzeImageWithCloudAi(File(imgPath));
+                                    if (desc != null) {
+                                      setModalState(() {
+                                        controller.text = desc;
+                                      });
+                                    }
+                                  }
+                                },
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 12),
                       ],
@@ -722,19 +928,18 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                       Expanded(
                         child: TextField(
                           controller: controller,
-                          autofocus: !isEditing,
+                          autofocus: !isEditing && imgPath == null,
                           maxLines: null,
                           expands: true,
                           onChanged: (_) => setModalState(() {}),
                           style: const TextStyle(color: AppColors.textPrimary, fontSize: 15, height: 1.5),
                           decoration: const InputDecoration(
-                            hintText: 'Scrivi un fatto, un ricordo o un documento (es. "Alla Manu piace il cioccolato")...',
+                            hintText: 'Scrivi un fatto, un ricordo o un #Tag (es. "Alla Manu piace la cioccolata")...',
                             hintStyle: TextStyle(color: AppColors.textSecondary, fontSize: 14),
                             border: InputBorder.none,
                           ),
                         ),
                       ),
-                      // Mostra in basso le altre note collegate automaticamente a questa!
                       if (linkedNotes.isNotEmpty) ...[
                         const Divider(color: AppColors.cardSurfaceLight),
                         const Padding(
@@ -847,76 +1052,25 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
 
     return Scaffold(
       backgroundColor: Colors.transparent,
-      // Barra di creazione rapida infallibile: Tocco su "+ Nuova Nota" per testo, più pulsanti diretti per Foto e Vocale
-      floatingActionButton: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FloatingActionButton.small(
-            heroTag: 'btn_voice',
-            tooltip: 'Registra Vocale',
-            backgroundColor: AppColors.cardSurfaceLight,
-            foregroundColor: AppColors.accentCoral,
-            onPressed: _showAudioRecorderSheet,
-            child: const Icon(Icons.mic_rounded, size: 20),
-          ),
-          const SizedBox(width: 8),
-          FloatingActionButton.small(
-            heroTag: 'btn_camera',
-            tooltip: 'Scatta Foto / Galleria',
-            backgroundColor: AppColors.cardSurfaceLight,
-            foregroundColor: AppColors.statusGreen,
-            onPressed: () {
-              HapticFeedback.selectionClick();
-              showModalBottomSheet(
-                context: context,
-                backgroundColor: AppColors.cardSurface,
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                ),
-                builder: (ctx) => SafeArea(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ListTile(
-                        leading: const Icon(Icons.camera_alt_outlined, color: AppColors.statusGreen),
-                        title: const Text('Scatta Foto con Vision AI & OCR', style: TextStyle(color: AppColors.textPrimary)),
-                        onTap: () {
-                          Navigator.pop(ctx);
-                          _handleImageCapture(ImageSource.camera);
-                        },
-                      ),
-                      ListTile(
-                        leading: const Icon(Icons.photo_library_outlined, color: AppColors.statusGreen),
-                        title: const Text('Scegli Immagine dalla Galleria', style: TextStyle(color: AppColors.textPrimary)),
-                        onTap: () {
-                          Navigator.pop(ctx);
-                          _handleImageCapture(ImageSource.gallery);
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-            child: const Icon(Icons.camera_alt_outlined, size: 20),
-          ),
-          const SizedBox(width: 10),
-          FloatingActionButton.extended(
-            heroTag: 'btn_new_note',
-            onPressed: () => _openDocumentEditor(),
-            backgroundColor: AppColors.accentCoralDark,
-            foregroundColor: AppColors.accentCoral,
-            icon: const Icon(Icons.add_rounded),
-            label: const Text('Nuova Nota', style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
+      // UNICO TASTO PULITO:
+      // - Click singolo (onTap) -> Apre subito l'editor di testo!
+      // - Tenuto premuto (onLongPress) -> Apre il menu Fotocamera / Galleria / Audio!
+      floatingActionButton: GestureDetector(
+        onLongPress: _showLongPressCreationMenu,
+        child: FloatingActionButton.extended(
+          heroTag: 'btn_unified_add',
+          onPressed: () => _openDocumentEditor(),
+          backgroundColor: AppColors.accentCoralDark,
+          foregroundColor: AppColors.accentCoral,
+          icon: const Icon(Icons.add_rounded),
+          label: const Text('Nuova Nota', style: TextStyle(fontWeight: FontWeight.bold)),
+        ),
       ),
       body: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Banner Stato Indicizzazione e Connessioni
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -932,28 +1086,45 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                       const Icon(Icons.hub_rounded, color: AppColors.statusGreen, size: 18),
                       const SizedBox(width: 8),
                       Text(
-                        'Memorie: $indexedCount • Collegamenti attivi: ${_allConnections.length}',
+                        'Memorie: $indexedCount • Collegamenti: ${_allConnections.length}',
                         style: const TextStyle(color: AppColors.statusGreen, fontWeight: FontWeight.w600, fontSize: 12.5),
                       ),
                     ],
                   ),
-                  GestureDetector(
-                    onTap: () async {
-                      HapticFeedback.mediumImpact();
-                      await BackgroundWorker.processPendingNotes();
-                      await _refreshNotes();
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: AppColors.statusGreen.withOpacity(0.25),
-                        borderRadius: BorderRadius.circular(12),
+                  Row(
+                    children: [
+                      GestureDetector(
+                        onTap: _showCloudAiSettingsDialog,
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 8.0),
+                          child: Icon(
+                            Icons.auto_awesome,
+                            size: 18,
+                            color: (_geminiApiKey != null && _geminiApiKey!.isNotEmpty)
+                                ? AppColors.accentCoral
+                                : AppColors.textSecondary,
+                          ),
+                        ),
                       ),
-                      child: const Text(
-                        'Ricalcola',
-                        style: TextStyle(color: AppColors.textPrimary, fontSize: 11, fontWeight: FontWeight.w600),
+                      GestureDetector(
+                        onTap: () async {
+                          HapticFeedback.mediumImpact();
+                          await BackgroundWorker.processPendingNotes();
+                          await _refreshNotes();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: AppColors.statusGreen.withOpacity(0.25),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Text(
+                            'Ricalcola',
+                            style: TextStyle(color: AppColors.textPrimary, fontSize: 11, fontWeight: FontWeight.w600),
+                          ),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
                 ],
               ),
@@ -1018,7 +1189,6 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
             ],
             const SizedBox(height: 12),
 
-            // Box Sintesi Risposta quando l'utente cerca qualcosa
             if (_searchQuery.trim().isNotEmpty && displayedNotes.isNotEmpty)
               Container(
                 width: double.infinity,
@@ -1072,7 +1242,7 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                   ? Center(
                       child: Text(
                         _searchQuery.isEmpty
-                            ? 'Nessuna nota presente.\nPremi "+ Nuova Nota" in basso per iniziare!'
+                            ? 'Nessuna nota presente.\nTocca "+ Nuova Nota" per scrivere o tieni premuto per Foto/Audio.'
                             : 'Nessuna informazione trovata per "$_searchQuery".',
                         textAlign: TextAlign.center,
                         style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
@@ -1213,7 +1383,11 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                                                 ),
                                                 child: Text(
                                                   '#$e',
-                                                  style: const TextStyle(color: AppColors.accentCoral, fontSize: 11, fontWeight: FontWeight.w600),
+                                                  style: const TextStyle(
+                                                    color: AppColors.accentCoral,
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
                                                 ),
                                               );
                                             }),
@@ -1226,7 +1400,11 @@ class _QuickNoteScreenState extends State<QuickNoteScreen> {
                                                 ),
                                                 child: Text(
                                                   '🔗 ${linkedNotes.length} collegate',
-                                                  style: const TextStyle(color: AppColors.statusGreen, fontSize: 11, fontWeight: FontWeight.w600),
+                                                  style: const TextStyle(
+                                                    color: AppColors.statusGreen,
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
                                                 ),
                                               ),
                                           ],

@@ -12,46 +12,60 @@ class SimilarityEngine {
     'della', 'dei', 'degli', 'delle', 'questo', 'questa', 'quello', 'quella',
     'molto', 'poco', 'più', 'meno', 'anche', 'solo', 'fare', 'fatto', 'dire',
     'detto', 'stato', 'stata', 'essere', 'avere', 'suo', 'sua', 'suoi', 'sue',
-    'mio', 'mia', 'miei', 'mie', 'tuo', 'tua'
+    'mio', 'mia', 'miei', 'mie', 'tuo', 'tua', 'piace', 'piacciono', 'nato', 'nata'
   };
 
-  // Parole troppo generiche che da sole NON devono mai collegare due persone diverse
+  // Mappa sinonimi/diminutivi -> Nome Canonico Unificato
+  static const Map<String, String> _personAliases = {
+    'manu': 'Manu',
+    'manuela': 'Manu',
+    'emanuela': 'Manu',
+    'paolo': 'Paolo',
+    'luca': 'Luca',
+    'marco': 'Marco',
+    'giulia': 'Giulia',
+    'sara': 'Sara',
+    'ale': 'Ale',
+    'alessandro': 'Ale',
+    'alessandra': 'Ale',
+    'fra': 'Fra',
+    'francesco': 'Fra',
+    'francesca': 'Fra',
+    'mamma': 'Mamma',
+    'papà': 'Papà',
+    'papa': 'Papà',
+  };
+
   static const Set<String> _genericLinkBlockers = {
     'nat', 'ann', 'giorn', 'mes', 'or', 'volt', 'cos', 'vit', 'cas', 'not',
     'fot', 'immagin', 'audi', 'vocal', 'marz', 'april', 'maggi', 'giugn',
     'lugli', 'agost', 'settembr', 'ottobr', 'novembr', 'dicembr', 'gennai', 'febbrai'
   };
 
-  // Domini concettuali per capire il significato delle frasi e delle ricerche
   static const Map<String, List<String>> _semanticDomains = {
-    'Compleanno / Nascita': [
-      'compleann', 'nat', 'nascit', 'fest', 'ann', 'età', 'gennai', 'febbrai',
+    'Compleanno': [
+      'compleann', 'nat', 'nascit', 'fest', 'età', 'gennai', 'febbrai',
       'marz', 'april', 'maggi', 'giugn', 'lugli', 'agost', 'settembr', 'ottobr',
       'novembr', 'dicembr'
     ],
-    'Gusti / Regali': [
+    'Gusti': [
       'piac', 'ador', 'am', 'prefer', 'gust', 'passion', 'ghiott', 'regal',
       'desider', 'kindle', 'cioccolat', 'libr', 'film', 'music'
     ],
-    'Cibo / Spesa': [
-      'mangi', 'cib', 'piatt', 'cioccolat', 'pizz', 'ristorant', 'spes',
+    'Spesa': [
+      'mangi', 'cib', 'piatt', 'pizz', 'ristorant', 'spes',
       'compr', 'supermercat', 'latt', 'biscott', 'ricett', 'cen', 'pranz'
     ],
-    'Lavoro / Studio': [
+    'Lavoro': [
       'lavor', 'uffi', 'progett', 'aziend', 'carrier', 'esam', 'studi',
       'universit', 'lezion', 'appunt', 'riunion', 'scadenz'
     ],
-    'Sport / Salute': [
-      'allenament', 'cors', 'palestr', 'sport', 'chilometr', 'salut', 'medic',
-      'visit', 'peso', 'dieta', 'esercizi'
-    ],
-    'Posizione / Coordinate': [
+    'Coordinate': [
       'coordinat', 'posizion', 'luog', 'minecraft', 'villaggi', 'bas',
-      'diamant', 'mapp', 'indirizz', 'viaggi', 'hotel'
+      'diamant', 'mapp', 'indirizz', 'viaggi'
     ],
   };
 
-  /// Rimuove i marcatori tecnici di file ([[IMG:...]], [[AUDIO:...]])
   static String stripMediaMarkers(String rawContent) {
     return rawContent
         .replaceAll(RegExp(r'\[\[IMG:[^\]]+\]\]'), '')
@@ -59,7 +73,7 @@ class SimilarityEngine {
         .trim();
   }
 
-  /// Estrae i Soggetti (#Tag, Persone come "Manu", "Io", o Categorie principali)
+  /// Estrae Soggetti (Persone anche scritte in minuscolo come "la manu", #Tag e Temi)
   static List<String> extractEntities(String rawText) {
     final text = stripMediaMarkers(rawText);
     if (text.isEmpty) return [];
@@ -67,28 +81,50 @@ class SimilarityEngine {
     final entities = <String>{};
     final lowerText = text.toLowerCase();
 
-    // 1. Estrae #Tag espliciti scritti dall'utente o dalla Vision AI
+    // 1. Estrae #Tag espliciti
     final hashtagMatches = RegExp(r'#([a-zA-Z0-9àèéìòùÀÈÉÌÒÙ_]+)').allMatches(text);
     for (final m in hashtagMatches) {
       final tag = m.group(1);
       if (tag != null && tag.length >= 2) {
-        entities.add(_capitalize(tag));
+        final lowerTag = tag.toLowerCase();
+        entities.add(_personAliases[lowerTag] ?? _capitalize(tag));
       }
     }
 
-    // 2. Rileva se il soggetto della nota sei TU ("io", "mio", "sono nato", "ho fatto")
+    // 2. Rileva se il soggetto sei TU ("io", "mio", "sono nato")
     if (RegExp(r'\b(io|mio|mia|miei|mie|me)\b').hasMatch(lowerText) ||
-        RegExp(r'\b(sono|ho)\s+(nato|nata|andato|andata|fatto|visto|comprato|preso)\b')
-            .hasMatch(lowerText)) {
+        RegExp(r'\b(sono|ho)\s+(nato|nata|andato|andata|fatto|comprato)\b').hasMatch(lowerText)) {
       entities.add('Io');
     }
 
-    // 3. Rileva Nomi Propri di Persona o Entità (parole con iniziale Maiuscola)
-    final commonStartWords = {
+    // 3. Rileva Persone dal dizionario alias anche se scritte in minuscolo ("manu", "manuela", ecc.)
+    for (final entry in _personAliases.entries) {
+      if (RegExp('\\b${entry.key}\\b', caseSensitive: false).hasMatch(lowerText)) {
+        entities.add(entry.value);
+      }
+    }
+
+    // 4. Pattern grammaticali italiani per persone scritte in minuscolo:
+    // es: "la manu è", "alla manu piace", "per manu", "con luca", "di giulia"
+    final personPatterns = [
+      RegExp(r'\b(?:alla|della|la|il|a|per|con|da)\s+([a-zàèéìòù]{3,12})\s+(?:è|piace|piacciono|ama|adora|vuole|compie|ha)\b', caseSensitive: false),
+      RegExp(r'\b(?:compleanno|regalo)\s+(?:di|della|del|per)\s+([a-zàèéìòù]{3,12})\b', caseSensitive: false),
+    ];
+    for (final pat in personPatterns) {
+      for (final match in pat.allMatches(lowerText)) {
+        final candidate = match.group(1)?.toLowerCase();
+        if (candidate != null && !_stopWords.contains(candidate)) {
+          entities.add(_personAliases[candidate] ?? _capitalize(candidate));
+        }
+      }
+    }
+
+    // 5. Rileva Nomi Propri con l'iniziale Maiuscola nel testo
+    final ignoreCapitals = {
       'oggi', 'ieri', 'domani', 'quando', 'sempre', 'forse', 'nota', 'alla',
-      'della', 'nella', 'sulla', 'dallo', 'dalla', 'un', 'una', 'il', 'lo',
-      'la', 'le', 'gli', 'scena', 'dettagli', 'testo', 'immagine', 'foto',
-      'documento', 'schermata', 'registrazione', 'memoria'
+      'della', 'nella', 'sulla', 'un', 'una', 'il', 'lo', 'la', 'le', 'gli',
+      'scena', 'dettagli', 'testo', 'immagine', 'foto', 'documento', 'vision',
+      'analisi', 'elementi', 'oggetto'
     };
 
     final sentences = text.split(RegExp(r'[.!?\n]+'));
@@ -100,34 +136,31 @@ class SimilarityEngine {
         if (clean.length < 3) continue;
 
         final lower = clean.toLowerCase();
-        if (_stopWords.contains(lower) || commonStartWords.contains(lower)) continue;
+        if (_stopWords.contains(lower) || ignoreCapitals.contains(lower)) continue;
 
         final bool isCap = clean[0] == clean[0].toUpperCase() &&
             clean[0] != clean[0].toLowerCase();
 
-        if (isCap && i > 0) {
-          // Maiuscola nel mezzo della frase -> quasi certamente Nome Proprio (es. "della Manu", "a Luca")
-          entities.add(_capitalize(lower));
-        } else if (isCap && i == 0 && words.length > 1) {
-          entities.add(_capitalize(lower));
+        if (isCap) {
+          entities.add(_personAliases[lower] ?? _capitalize(lower));
         }
       }
     }
 
-    // 4. Se non c'è una persona specifica, assegna il tema semantico principale se presente
-    if (entities.isEmpty) {
-      final tokens = tokenize(text, forLinking: false);
-      for (final entry in _semanticDomains.entries) {
-        final domainName = entry.key.split('/').first.trim();
-        final keywords = entry.value;
-        if (tokens.any((t) => keywords.any((k) => t.startsWith(k) || k.startsWith(t)))) {
-          entities.add(domainName);
-          break;
-        }
+    // 6. Aggiunge anche il Dominio Semantico (es. #Compleanno, #Gusti) SENZA sovrascrivere la Persona!
+    final tokens = tokenize(text, forLinking: false);
+    for (final entry in _semanticDomains.entries) {
+      final domainName = entry.key;
+      final keywords = entry.value;
+      if (tokens.any((t) => keywords.any((k) => t.startsWith(k) || k.startsWith(t)))) {
+        entities.add(domainName);
       }
     }
 
-    return entities.take(5).toList();
+    // Rimuove eventuali tag di rumore generati da vecchie scansioni
+    entities.removeWhere((e) => e.toLowerCase() == 'vision');
+
+    return entities.take(6).toList();
   }
 
   static String _capitalize(String s) =>
@@ -143,10 +176,11 @@ class SimilarityEngine {
     final tokens = <String>[];
     for (final w in cleaned.split(RegExp(r'\s+'))) {
       if (w.length < 2 || _stopWords.contains(w)) continue;
-      // Nel linking tra note ignora i numeri puri (così 2003 e 2004 non creano falsi link)
       if (forLinking && RegExp(r'^\d+$').hasMatch(w)) continue;
 
-      final stemmed = _stem(w);
+      // Normalizza alias (es. "manuela" -> "manu")
+      final canonical = _personAliases[w]?.toLowerCase() ?? w;
+      final stemmed = _stem(canonical);
       if (forLinking && _genericLinkBlockers.contains(stemmed)) continue;
       tokens.add(stemmed);
     }
@@ -190,30 +224,31 @@ class SimilarityEngine {
     return vec;
   }
 
-  /// Decide se due note hanno davvero senso collegate insieme
+  /// Collega automaticamente due note se parlano della stessa Persona/Soggetto o dello stesso Argomento specifico
   static double computeNoteLinkScore(String contentA, String contentB) {
     final entitiesA = extractEntities(contentA).map((e) => e.toLowerCase()).toSet();
     final entitiesB = extractEntities(contentB).map((e) => e.toLowerCase()).toSet();
 
-    final sharedEntities = entitiesA.intersection(entitiesB);
+    // Separa le Persone/Soggetti dai Temi generici (#Compleanno, #Gusti)
+    final domainNames = _semanticDomains.keys.map((k) => k.toLowerCase()).toSet();
+    final subjectsA = entitiesA.difference(domainNames);
+    final subjectsB = entitiesB.difference(domainNames);
 
-    // Se parlano di due soggetti diversi (es. "Manu" vs "Io") e non hanno soggetti in comune:
-    final bool hasDifferentSubjects =
-        entitiesA.isNotEmpty && entitiesB.isNotEmpty && sharedEntities.isEmpty;
+    final sharedSubjects = subjectsA.intersection(subjectsB);
+
+    // Se entrambe parlano della STESSA persona/oggetto (es. #Manu o #Walle), crea un link forte!
+    if (sharedSubjects.isNotEmpty) {
+      return (0.75 + 0.10 * sharedSubjects.length).clamp(0.0, 0.98);
+    }
+
+    // Se parlano di due persone diverse (es. #Manu vs #Io) senza soggetti in comune, blocca falsi link!
+    if (subjectsA.isNotEmpty && subjectsB.isNotEmpty && sharedSubjects.isEmpty) {
+      return 0.0;
+    }
 
     final tokensA = tokenize(contentA, forLinking: true).toSet();
     final tokensB = tokenize(contentB, forLinking: true).toSet();
     final sharedConcepts = tokensA.intersection(tokensB);
-
-    // Blocca i falsi positivi: se i soggetti sono diversi e non hanno almeno 2 concetti specifici in comune, 0!
-    if (hasDifferentSubjects && sharedConcepts.length < 2) {
-      return 0.0;
-    }
-
-    // Se condividono lo stesso Soggetto (es. entrambe parlano di #Manu), il collegamento è fortissimo e sensato!
-    if (sharedEntities.isNotEmpty) {
-      return (0.65 + 0.15 * sharedEntities.length).clamp(0.0, 0.98);
-    }
 
     final vecA = generateSimpleVector(contentA);
     final vecB = generateSimpleVector(contentB);
@@ -223,14 +258,9 @@ class SimilarityEngine {
       sim += 0.18 * sharedConcepts.length;
     }
 
-    if (hasDifferentSubjects) {
-      sim *= 0.35;
-    }
-
     return sim.clamp(0.0, 1.0);
   }
 
-  /// Ricerca Semantica Intelligente: capisce domande naturali, date, compleanni, gusti e soggetti
   static Map<String, dynamic> queryDocument(String query, String rawContent, String? vectorJson) {
     final content = stripMediaMarkers(rawContent);
     if (query.trim().isEmpty) {
@@ -244,7 +274,6 @@ class SimilarityEngine {
     final qEntities = extractEntities(query).map((e) => e.toLowerCase()).toSet();
     final docEntities = extractEntities(content).map((e) => e.toLowerCase()).toSet();
 
-    // 1. Espansione concettuale: capisce se stai cercando una data/compleanno, un gusto/regalo, ecc.
     final expandedTerms = <String>{...qTokens};
     bool asksForDateOrBirthday = false;
 
@@ -252,13 +281,10 @@ class SimilarityEngine {
       final domainKeywords = entry.value;
       if (qTokens.any((qt) => domainKeywords.any((dk) => qt.startsWith(dk) || dk.startsWith(qt)))) {
         expandedTerms.addAll(domainKeywords);
-        if (entry.key.contains('Compleanno')) {
-          asksForDateOrBirthday = true;
-        }
+        if (entry.key == 'Compleanno') asksForDateOrBirthday = true;
       }
     }
 
-    // Se la query chiede "compleanno" o "quando è nato/a", controlla se nella nota c'è una data numerica (es. 4/12/2004)
     final bool noteHasDatePattern =
         RegExp(r'\b\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?\b').hasMatch(lowerContent) ||
         RegExp(r'\b(19|20)\d{2}\b').hasMatch(lowerContent);
@@ -277,13 +303,8 @@ class SimilarityEngine {
       if (sTokens.isEmpty && !sLower.contains(lowerQuery)) continue;
 
       double score = 0.0;
+      if (sLower.contains(lowerQuery)) score += 0.9;
 
-      // Match diretto di sottostringa
-      if (sLower.contains(lowerQuery)) {
-        score += 0.9;
-      }
-
-      // Match sui token della query ed espansioni semantiche
       int matchedQueryRoots = 0;
       for (final qt in qTokens) {
         bool matchedThis = false;
@@ -298,31 +319,27 @@ class SimilarityEngine {
             break;
           }
         }
-        if (!matchedThis) {
-          // Controlla se la frase contiene un concetto affine del dominio (es. cerchi "compleanno" e trova "nato il 4/12/2004")
-          if (sTokens.any((st) => expandedTerms.any((et) => st.startsWith(et) || et.startsWith(st)))) {
-            score += 0.45;
-            matchedThis = true;
-          }
+        if (!matchedThis &&
+            sTokens.any((st) => expandedTerms.any((et) => st.startsWith(et) || et.startsWith(st)))) {
+          score += 0.45;
+          matchedThis = true;
         }
         if (matchedThis) matchedQueryRoots++;
       }
 
       if (qTokens.isNotEmpty) {
-        score = (score + (matchedQueryRoots / qTokens.length) * 0.5);
+        score += (matchedQueryRoots / qTokens.length) * 0.5;
       }
 
-      // Bonus se chiedi "compleanno / quando è nato" e la frase contiene una data + "nato/a"
       if (asksForDateOrBirthday && noteHasDatePattern) {
         score += 0.45;
       }
 
-      // Se nella domanda hai specificato una persona (es. "Manu"), premia le note su Manu e penalizza le altre!
       if (qEntities.isNotEmpty) {
         if (docEntities.intersection(qEntities).isNotEmpty) {
-          score += 0.4;
+          score += 0.45;
         } else {
-          score *= 0.35;
+          score *= 0.3;
         }
       }
 
