@@ -51,17 +51,17 @@ Analizza la nota ed estrai un grafo di concetti e relazioni di profondità varia
 
 REGOLE LOGICHE FONDAMENTALI:
 1. RIUTILIZZO DEL CONTESTO: Se un concetto corrisponde a uno già presente nel grafo dell'utente [$existingListStr], usa ESATTAMENTE lo stesso nome per collegarti ad esso. Non usare MAI il simbolo "#".
-2. ANCORAGGIO AL SOGGETTO: Ogni informazione che riguarda una persona (es. "Manu") o l'autore ("Io") deve partire dal nodo di quella persona.
-3. PROFONDITÀ DINAMICA (NON FORZARE LIVELLI INUTILI):
-   - Usa 1 SOLO SALTO (Relazione Diretta) per attributi o fatti atomici:
-     Esempio: "La Manu è nata il 24/04/2003" -> ("Manu" --[data di nascita]--> "24/04/2003"). NON creare nodi intermedi inutili se il fatto è diretto.
-   - Usa 2 SALTI quando esiste un vero contenitore logico, una sfera di preferenze o un evento specifico:
-     Esempio: "Regali laurea Manu: Kindle, profumo Narciso Rodriguez" -> ("Manu" --[evento]--> "Laurea"), ("Laurea" --[idea regalo]--> "Kindle"), ("Laurea" --[idea regalo]--> "Profumo Narciso Rodriguez").
-     Esempio: "Alla Manu piace il cioccolato e odia i mandarini" -> ("Manu" --[sfera]--> "Gusti"), ("Gusti" --[adora]--> "Cioccolato"), ("Gusti" --[odia]--> "Mandarini").
-   - Usa 3 O PIÙ SALTI quando un oggetto ha a sua volta dettagli, luoghi o sotto-attributi:
-     Esempio: "Per la laurea di Manu camera all'Hotel della Cioccolata a Perugia" -> ("Manu" --[evento]--> "Laurea" --[idea regalo]--> "Camera Hotel della Cioccolata" --[luogo]--> "Perugia").
-4. ENTITÀ COMPOSTE INTATTE: Non spezzare mai i nomi propri di prodotti, libri o luoghi (es. "Profumo Narciso Rodriguez" è un singolo nodo di tipo "oggetto", NON una persona di nome Rodriguez).
-5. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido con questa struttura:
+2. ANCORAGGIO AL SOGGETTO E ALL'UTENTE: 
+   - Ogni informazione che riguarda una persona (es. "Manu", "Martina") deve partire dal nodo di quella persona.
+   - I riferimenti in prima persona o possessivi ("io", "il mio", "nostro") DEVONO SEMPRE essere ancorati al nodo "Io" (es. "Il mio gatto Rufy" -> ("Io" --[possiede]--> "Rufy", "Rufy" --[è]--> "gatto").
+3. GESTIONE DELLE PREFERENZE E DEI BRAND SPECIFICI:
+   - Se l'utente esprime un gusto generale e poi un'eccezione o un brand specifico (es. "A Manu piace il cioccolato ma non le piace il cioccolato Lidl"), gestisci la gerarchia creando il sotto-nodo specifico collegato alla preferenza o direttamente all'entità con la relazione corretta (es. ("Manu" --[sfera]--> "Gusti"), ("Gusti" --[adora]--> "Cioccolato"), ("Cioccolato" --[marca non gradita]--> "Cioccolato Lidl") oppure ("Manu" --[non adora]--> "Cioccolato Lidl")). Non perdere mai il brand o la specificità indicata dall'utente.
+4. PROFONDITÀ DINAMICA (NON FORZARE LIVELLI INUTILI):
+   - Usa 1 SOLO SALTO per attributi o fatti atomici diretti (es. "La Manu è nata il 24/04/2003" -> ("Manu" --[data di nascita]--> "24/04/2003")).
+   - Usa 2 SALTI per contenitori logici, sfere di preferenze o eventi (es. "Regali laurea Manu: Kindle" -> ("Manu" --[evento]--> "Laurea"), ("Laurea" --[idea regalo]--> "Kindle")).
+   - Usa 3 O PIÙ SALTI per oggetti con dettagli, luoghi o sotto-attributi complessi.
+5. ENTITÀ COMPOSTE INTATTE: Non spezzare mai i nomi propri di prodotti, brand o luoghi (es. "Cioccolato Lidl", "Profumo Narciso Rodriguez", "Hotel della Cioccolata").
+6. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido con questa struttura:
 {
   "entities": [
     {"name": "Nome Entità", "type": "persona | evento | categoria | oggetto | luogo | data | concetto"}
