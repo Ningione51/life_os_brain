@@ -60,6 +60,11 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
   _GraphNode? _selectedNode;
   _GraphNode? _draggedNode;
 
+  double _nodeRepulsion = 260000.0;
+  double _edgeRepulsion = 180000.0;
+  double _minNodeDistance = 160.0;
+  double _minEdgeDistance = 110.0;
+
   Offset _cameraOffset = Offset.zero;
   double _cameraScale = 1.0;
   double _cameraRotation = 0.0;
@@ -317,7 +322,7 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
       }
     }
 
-    _applyForceRelaxation(nodes);
+    _applyForceRelaxation(nodes, edges);
 
     if (mounted) {
       setState(() {
@@ -331,25 +336,151 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
     }
   }
 
-  void _applyForceRelaxation(List<_GraphNode> nodes) {
-    const int iterations = 32;
-    const double repulsion = 11000.0;
-    const double minDistance = 100.0;
+  void _applyForceRelaxation(List<_GraphNode> nodes, List<_GraphEdge> edges) {
+    const int iterations = 60;
+    // Rimuovi le vecchie costanti "const double nodeRepulsion = ..."
+
+    final nodeMap = {for (var n in nodes) n.id: n};
 
     for (int step = 0; step < iterations; step++) {
+      // 1. Repulsione NODO contro NODO
       for (int i = 0; i < nodes.length; i++) {
         for (int j = i + 1; j < nodes.length; j++) {
           final delta = nodes[i].position - nodes[j].position;
           final dist = max(14.0, delta.distance);
-          if (dist < minDistance * 1.45) {
-            final force = (repulsion / (dist * dist)).clamp(0.5, 18.0);
+          if (dist < _minNodeDistance * 1.5) {
+            // Usa _minNodeDistance
+            final force = (_nodeRepulsion / (dist * dist))
+                .clamp(0.5, 25.0); // Usa _nodeRepulsion
             final dir = delta / dist;
             if (!nodes[i].isPrimaryHub) nodes[i].position += dir * force;
             if (!nodes[j].isPrimaryHub) nodes[j].position -= dir * force;
           }
         }
       }
+
+      // 2. Repulsione NODO contro ARCO
+      for (final node in nodes) {
+        if (node.isPrimaryHub) continue;
+
+        for (final edge in edges) {
+          if (edge.sourceId == node.id || edge.targetId == node.id) continue;
+
+          final source = nodeMap[edge.sourceId];
+          final target = nodeMap[edge.targetId];
+          if (source == null || target == null) continue;
+
+          final v = target.position - source.position;
+          final w = node.position - source.position;
+
+          final c1 = w.dx * v.dx + w.dy * v.dy;
+          if (c1 <= 0) continue;
+
+          final c2 = v.dx * v.dx + v.dy * v.dy;
+          if (c2 <= c1) continue;
+
+          final b = c1 / c2;
+          final proj = source.position + Offset(v.dx * b, v.dy * b);
+
+          final deltaP = node.position - proj;
+          final d = deltaP.distance;
+
+          if (d > 0 && d < _minEdgeDistance) {
+            // Usa _minEdgeDistance
+            final force = (_edgeRepulsion / (d * d))
+                .clamp(0.5, 22.0); // Usa _edgeRepulsion
+            node.position += (deltaP / d) * force;
+          }
+        }
+      }
     }
+  }
+
+  void _showGraphSettings() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.cardSurface, // Usa i colori della tua app
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Fisica del Grafo',
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white)),
+                  const SizedBox(height: 20),
+
+                  // Slider Repulsione Nodi
+                  Text('Repulsione Nodi: ${_nodeRepulsion.toInt()}',
+                      style: const TextStyle(color: Colors.white70)),
+                  Slider(
+                    value: _nodeRepulsion,
+                    min: 50000,
+                    max: 600000,
+                    divisions: 55,
+                    activeColor: AppColors.accentCoral,
+                    onChanged: (val) =>
+                        setModalState(() => _nodeRepulsion = val),
+                    onChangeEnd: (_) => _buildGraph(),
+                  ),
+
+                  // Slider Repulsione Archi
+                  Text('Repulsione Archi: ${_edgeRepulsion.toInt()}',
+                      style: const TextStyle(color: Colors.white70)),
+                  Slider(
+                    value: _edgeRepulsion,
+                    min: 10000,
+                    max: 400000,
+                    divisions: 39,
+                    activeColor: AppColors.accentCoral,
+                    onChanged: (val) =>
+                        setModalState(() => _edgeRepulsion = val),
+                    onChangeEnd: (_) => _buildGraph(),
+                  ),
+
+                  // Slider Distanza Minima Nodi
+                  Text('Distanza Minima Nodi: ${_minNodeDistance.toInt()}',
+                      style: const TextStyle(color: Colors.white70)),
+                  Slider(
+                    value: _minNodeDistance,
+                    min: 50,
+                    max: 400,
+                    divisions: 35,
+                    activeColor: AppColors.statusGreen,
+                    onChanged: (val) =>
+                        setModalState(() => _minNodeDistance = val),
+                    onChangeEnd: (_) => _buildGraph(),
+                  ),
+
+                  // Slider Distanza Minima Archi
+                  Text('Distanza Minima Archi: ${_minEdgeDistance.toInt()}',
+                      style: const TextStyle(color: Colors.white70)),
+                  Slider(
+                    value: _minEdgeDistance,
+                    min: 50,
+                    max: 300,
+                    divisions: 25,
+                    activeColor: AppColors.statusGreen,
+                    onChanged: (val) =>
+                        setModalState(() => _minEdgeDistance = val),
+                    onChangeEnd: (_) => _buildGraph(),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -500,6 +631,17 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                     cameraRotation: _cameraRotation,
                   ),
                 ),
+              ),
+            ),
+            Positioned(
+              top: 60,
+              right: 20, // O dove preferisci nella tua UI
+              child: FloatingActionButton(
+                heroTag: 'graph_settings',
+                mini: true,
+                backgroundColor: AppColors.cardSurface,
+                onPressed: _showGraphSettings,
+                child: const Icon(Icons.tune, color: AppColors.accentCoral),
               ),
             ),
             Positioned(
@@ -692,6 +834,7 @@ class _ObsidianGraphPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final screenCenter = Offset(size.width / 2, size.height / 2);
 
+    // Sfondo a puntini
     final dotPaint = Paint()..color = const Color(0xFF242020);
     const double step = 55.0;
     for (double x = -700; x <= 700; x += step) {
@@ -708,13 +851,82 @@ class _ObsidianGraphPainter extends CustomPainter {
 
     final nodeMap = {for (var n in nodes) n.id: n};
 
-    for (final edge in edges) {
+    // 1. DIMENSIONI NODI RIDOTTE
+    final screenNodes = <String, Rect>{};
+    double getRadius(_GraphNode n) {
+      final rawR = n.isPrimaryHub
+          ? 14.0
+          : (n.isBranchHub ? 11.0 : max(7.0, 9.5 - n.depth));
+      return rawR * cameraScale.clamp(0.65, 1.5) + 4.0;
+    }
+
+    for (final node in nodes) {
+      final pos = _worldToScreen(node.position, screenCenter);
+      final r = getRadius(node);
+      screenNodes[node.id] = Rect.fromCircle(center: pos, radius: r + 10.0);
+    }
+
+    final List<Rect> occupiedRects = screenNodes.values.toList();
+
+    // 2. ARCHI A SINGOLA CURVA E SCHIVATA OSTACOLI
+    for (int i = 0; i < edges.length; i++) {
+      final edge = edges[i];
       final source = nodeMap[edge.sourceId];
       final target = nodeMap[edge.targetId];
       if (source == null || target == null) continue;
 
       final p1 = _worldToScreen(source.position, screenCenter);
       final p2 = _worldToScreen(target.position, screenCenter);
+
+      final r1 = getRadius(source);
+      final r2 = getRadius(target);
+
+      final dx = p2.dx - p1.dx;
+      final dy = p2.dy - p1.dy;
+      final distance = sqrt(dx * dx + dy * dy);
+
+      if (distance < (r1 + r2)) continue;
+
+      final dirX = dx / distance;
+      final dirY = dy / distance;
+
+      final startPt = Offset(p1.dx + dirX * r1, p1.dy + dirY * r1);
+      final endPt = Offset(p2.dx - dirX * r2, p2.dy - dirY * r2);
+
+      // Calcolo del vettore perpendicolare per la curva
+      final perpX = -dirY;
+      final perpY = dirX;
+
+      // Spinta di base per separare gli archi tra loro (Effetto "Corsie")
+      final laneOffset = ((i % 5) - 2) * 15.0;
+
+      // Spinta dinamica per schivare i nodi in mezzo al tragitto
+      double obstacleRepulsion = 0.0;
+      final midLinePoint =
+          Offset((startPt.dx + endPt.dx) / 2, (startPt.dy + endPt.dy) / 2);
+
+      for (final node in nodes) {
+        if (node.id == source.id || node.id == target.id) continue;
+
+        final nPos = _worldToScreen(node.position, screenCenter);
+        final distToMid = (nPos - midLinePoint).distance;
+        final nRadius = getRadius(node);
+
+        if (distToMid < nRadius + 50.0) {
+          final crossProduct =
+              (endPt.dx - startPt.dx) * (nPos.dy - startPt.dy) -
+                  (endPt.dy - startPt.dy) * (nPos.dx - startPt.dx);
+          final sign = crossProduct > 0 ? -1.0 : 1.0;
+          obstacleRepulsion += sign * (80.0 - distToMid).clamp(30.0, 100.0);
+        }
+      }
+
+      // Punto di controllo unico (curva dolce a U, non a S)
+      final totalCurve = laneOffset + obstacleRepulsion;
+      final cp = Offset(
+        midLinePoint.dx + perpX * totalCurve,
+        midLinePoint.dy + perpY * totalCurve,
+      );
 
       final bool isHighlighted = selectedNode != null &&
           (selectedNode!.id == source.id || selectedNode!.id == target.id);
@@ -724,38 +936,76 @@ class _ObsidianGraphPainter extends CustomPainter {
         ..color = isHighlighted
             ? AppColors.accentCoral
             : AppColors.statusGreen.withOpacity(isDimmed ? 0.12 : 0.48)
-        ..strokeWidth = isHighlighted ? 2.6 : 1.6
+        ..strokeWidth = isHighlighted ? 2.2 : 1.4
         ..style = PaintingStyle.stroke;
 
-      canvas.drawLine(p1, p2, paint);
+      final path = Path()
+        ..moveTo(startPt.dx, startPt.dy)
+        ..quadraticBezierTo(cp.dx, cp.dy, endPt.dx, endPt.dy);
 
+      canvas.drawPath(path, paint);
+
+      // Posizionamento del testo a metà dell'arco
       if ((!isDimmed || isHighlighted) &&
           edge.predicate.isNotEmpty &&
           cameraScale > 0.65) {
-        final midPoint = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
+        // Punto medio esatto della curva di Bézier quadratica
+        final midX = 0.25 * startPt.dx + 0.5 * cp.dx + 0.25 * endPt.dx;
+        final midY = 0.25 * startPt.dy + 0.5 * cp.dy + 0.25 * endPt.dy;
+
+        Offset textPoint = Offset(midX, midY);
+
         final predSpan = TextSpan(
           text: edge.predicate,
           style: TextStyle(
             color:
                 isHighlighted ? AppColors.accentCoral : AppColors.textSecondary,
-            fontSize: isHighlighted ? 10.5 : 9.0,
+            fontSize: isHighlighted ? 9.5 : 8.0, // Testo archi più piccolo
             fontWeight: isHighlighted ? FontWeight.bold : FontWeight.w500,
           ),
         );
         final tp = TextPainter(text: predSpan, textDirection: TextDirection.ltr)
           ..layout();
+
+        Rect labelRect = Rect.fromCenter(
+            center: textPoint, width: tp.width + 10, height: tp.height + 6);
+
+        int attempts = 0;
+        double shiftRadius = 10.0;
+        double angle = 0.0;
+
+        while (attempts < 8) {
+          bool hasCollision = false;
+          for (final rect in occupiedRects) {
+            if (rect.overlaps(labelRect)) {
+              hasCollision = true;
+              break;
+            }
+          }
+
+          if (!hasCollision) break;
+
+          attempts++;
+          textPoint = Offset(
+              midX + cos(angle) * shiftRadius, midY + sin(angle) * shiftRadius);
+          labelRect = Rect.fromCenter(
+              center: textPoint, width: tp.width + 10, height: tp.height + 6);
+
+          angle += (pi / 3);
+          if (attempts % 6 == 0) shiftRadius += 12.0;
+        }
+
+        occupiedRects.add(labelRect);
+
         canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromCenter(
-                center: midPoint, width: tp.width + 8, height: tp.height + 3),
-            const Radius.circular(6),
-          ),
-          Paint()..color = AppColors.background.withOpacity(0.88),
+          RRect.fromRectAndRadius(labelRect, const Radius.circular(5)),
+          Paint()..color = AppColors.background.withOpacity(0.95),
         );
-        tp.paint(canvas, midPoint - Offset(tp.width / 2, tp.height / 2));
+        tp.paint(canvas, textPoint - Offset(tp.width / 2, tp.height / 2));
       }
     }
 
+    // 3. DISEGNO DEI NODI (Ridimensionato)
     for (final node in nodes) {
       final pos = _worldToScreen(node.position, screenCenter);
 
@@ -767,10 +1017,7 @@ class _ObsidianGraphPainter extends CustomPainter {
       final bool isDimmed =
           selectedNode != null && !isSelected && !isConnectedToSelected;
 
-      final double rawRadius = node.isPrimaryHub
-          ? 20.0
-          : (node.isBranchHub ? 15.0 : max(10.0, 13.5 - node.depth));
-      final double baseRadius = rawRadius * cameraScale.clamp(0.65, 1.5);
+      final double baseRadius = getRadius(node);
 
       final Color mainColor = node.isPrimaryHub
           ? AppColors.accentCoral
@@ -781,7 +1028,7 @@ class _ObsidianGraphPainter extends CustomPainter {
       if (isSelected || node.isPrimaryHub) {
         canvas.drawCircle(
           pos,
-          baseRadius + 7,
+          baseRadius + 5,
           Paint()..color = mainColor.withOpacity(isSelected ? 0.35 : 0.15),
         );
       }
@@ -804,7 +1051,9 @@ class _ObsidianGraphPainter extends CustomPainter {
           color: isDimmed
               ? AppColors.textSecondary.withOpacity(0.3)
               : (isSelected ? AppColors.accentCoral : AppColors.textPrimary),
-          fontSize: node.isPrimaryHub ? 13.0 : (node.isBranchHub ? 11.5 : 10.5),
+          fontSize: node.isPrimaryHub
+              ? 11.0
+              : (node.isBranchHub ? 9.5 : 9.0), // Testo nodi ridotto
           fontWeight: node.isPrimaryHub || node.isBranchHub || isSelected
               ? FontWeight.bold
               : FontWeight.w500,
@@ -815,11 +1064,11 @@ class _ObsidianGraphPainter extends CustomPainter {
 
       final pillRect = RRect.fromRectAndRadius(
         Rect.fromCenter(
-          center: pos + Offset(0, baseRadius + 14),
-          width: tp.width + 14,
-          height: tp.height + 6,
+          center: pos + Offset(0, baseRadius + 12),
+          width: tp.width + 12,
+          height: tp.height + 4,
         ),
-        const Radius.circular(10),
+        const Radius.circular(8),
       );
 
       canvas.drawRRect(
@@ -828,7 +1077,7 @@ class _ObsidianGraphPainter extends CustomPainter {
           ..color = AppColors.cardSurface.withOpacity(isDimmed ? 0.3 : 0.92),
       );
       tp.paint(
-          canvas, pos + Offset(-tp.width / 2, baseRadius + 14 - tp.height / 2));
+          canvas, pos + Offset(-tp.width / 2, baseRadius + 12 - tp.height / 2));
     }
   }
 

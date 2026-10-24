@@ -45,7 +45,8 @@ class NoteDao {
     );
   }
 
-  Future<int> markAsIndexed(String id, String vectorJson, {required bool aiSynced}) async {
+  Future<int> markAsIndexed(String id, String vectorJson,
+      {required bool aiSynced}) async {
     final db = await CipherDatabase.instance.database;
     return await db.update(
       'notes',
@@ -97,11 +98,25 @@ class NoteDao {
 
   Future<int> deleteNote(String id) async {
     final db = await CipherDatabase.instance.database;
-    return await db.delete(
+
+    // 1. Elimina prima tutte le relazioni nel Knowledge Graph create da questa nota
+    await db.delete(
+      'kg_relations',
+      where: 'note_id = ?',
+      whereArgs: [id],
+    );
+
+    // 2. Elimina la nota vera e propria
+    final result = await db.delete(
       'notes',
       where: 'id = ?',
       whereArgs: [id],
     );
+
+    // 3. Avvia la pulizia per cancellare i nodi rimasti senza collegamenti
+    await cleanUpOrphanNodes();
+
+    return result;
   }
 
   Future<void> restoreNote(Map<String, dynamic> note) async {
@@ -114,7 +129,8 @@ class NoteDao {
         'vector_json': note['vector_json'],
         'status': 'PENDING',
         'ai_synced': 0,
-        'created_at': note['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+        'created_at':
+            note['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
@@ -147,7 +163,8 @@ class NoteDao {
     final db = await CipherDatabase.instance.database;
     await db.transaction((txn) async {
       // Pulisce le vecchie relazioni di questa nota (utile se la nota è stata modificata)
-      await txn.delete('kg_relations', where: 'note_id = ?', whereArgs: [noteId]);
+      await txn
+          .delete('kg_relations', where: 'note_id = ?', whereArgs: [noteId]);
 
       // 1. Garantisce sempre l'esistenza del nodo radice dell'utente (#Io)
       await txn.insert(
@@ -158,9 +175,15 @@ class NoteDao {
 
       // 2. Inserisce o fonde dinamicamente i nodi
       for (final ent in entities) {
-        final rawName = (ent['id'] ?? ent['name'] ?? ent['nome'] ?? ent['label'] ?? '').toString();
-        final rawLabel = (ent['label'] ?? ent['name'] ?? ent['nome'] ?? rawName).toString();
-        final type = (ent['type'] ?? ent['tipo'] ?? 'concetto').toString().trim().toLowerCase();
+        final rawName =
+            (ent['id'] ?? ent['name'] ?? ent['nome'] ?? ent['label'] ?? '')
+                .toString();
+        final rawLabel =
+            (ent['label'] ?? ent['name'] ?? ent['nome'] ?? rawName).toString();
+        final type = (ent['type'] ?? ent['tipo'] ?? 'concetto')
+            .toString()
+            .trim()
+            .toLowerCase();
 
         final cleanId = _normalizeId(rawName);
         if (cleanId.isNotEmpty) {
@@ -178,15 +201,25 @@ class NoteDao {
 
       // 3. Inserisce le relazioni normalizzando gli estremi e rispettando UNIQUE
       for (final rel in relations) {
-        final rawSource = (rel['source_node'] ?? rel['source'] ?? rel['sorgente'] ?? '').toString();
-        final rawPred = (rel['predicate'] ?? rel['predicato'] ?? rel['type'] ?? '').toString();
-        final rawTarget = (rel['target_node'] ?? rel['target'] ?? rel['destinazione'] ?? '').toString();
+        final rawSource =
+            (rel['source_node'] ?? rel['source'] ?? rel['sorgente'] ?? '')
+                .toString();
+        final rawPred =
+            (rel['predicate'] ?? rel['predicato'] ?? rel['type'] ?? '')
+                .toString();
+        final rawTarget =
+            (rel['target_node'] ?? rel['target'] ?? rel['destinazione'] ?? '')
+                .toString();
 
         final source = _normalizeId(rawSource);
         final target = _normalizeId(rawTarget);
-        final predicate = rawPred.trim().toUpperCase().replaceAll(RegExp(r'\s+'), '_');
+        final predicate =
+            rawPred.trim().toUpperCase().replaceAll(RegExp(r'\s+'), '_');
 
-        if (source.isNotEmpty && predicate.isNotEmpty && target.isNotEmpty && source != target) {
+        if (source.isNotEmpty &&
+            predicate.isNotEmpty &&
+            target.isNotEmpty &&
+            source != target) {
           await txn.insert(
             'kg_nodes',
             {
@@ -219,9 +252,11 @@ class NoteDao {
         }
       }
     });
+    await cleanUpOrphanNodes();
   }
 
-  Future<void> saveConnection(String sourceId, String targetId, double score) async {
+  Future<void> saveConnection(
+      String sourceId, String targetId, double score) async {
     final db = await CipherDatabase.instance.database;
     await db.insert(
       'note_connections',
@@ -232,5 +267,19 @@ class NoteDao {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  Future<void> cleanUpOrphanNodes() async {
+    final db = await CipherDatabase.instance.database;
+
+    // Elimina i nodi il cui ID non è presente in nessuna relazione (salvando il nodo radice 'io')
+    await db.rawDelete('''
+      DELETE FROM kg_nodes 
+      WHERE id NOT IN (
+        SELECT source_node FROM kg_relations 
+        UNION 
+        SELECT target_node FROM kg_relations
+      ) AND id != 'io'
+    ''');
   }
 }

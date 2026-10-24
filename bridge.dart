@@ -101,7 +101,7 @@ REGOLE ONTOLOGICHE (SEGUI ALLA LETTERA):
 3. EVENTI: Gli eventi (es. lauree, compleanni) DEVONO essere collegati al soggetto protagonista usando "PROTAGONISTA". Es: laurea_martina -> PROTAGONISTA -> martina.
 4. ECCEZIONI E NEGAZIONI: Crea un nodo padre per la categoria generale e un nodo figlio per l'eccezione (SOTTOCATEGORIA_DI). Applica il verbo positivo al padre e il verbo negativo (NON_AMA) ESCLUSIVAMENTE al figlio. Mai creare contraddizioni sullo stesso nodo.
 5. FORMATO: id e source/target_node in snake_case minuscolo. predicate in MAIUSCOLO_SNAKE_CASE. type: persona, animale, oggetto, concetto, evento, luogo, data.
-
+6. DIVIETO DI NODI-FRASE E AZIONI NEI NODI: I nodi DEVONO essere entità singole (es. "Mamma", "Argo", "Laurea di Martina"). NON creare MAI nodi che contengono intere frasi, verbi o negazioni (es. vietato creare nodi come "non_portiamo_argo"). Le azioni, le decisioni e le negazioni vanno espresse ESCLUSIVAMENTE tramite il "predicate" delle relazioni.
 ESEMPI DI RIFERIMENTO (Output Atteso):
 Input: "Manu e Martina sono sorelle. Il 26/10/2024 io e Manu dobbiamo andare alla laurea di Martina."
 Output:
@@ -152,6 +152,20 @@ Output:
     {"source_node": "kindle", "predicate": "IDEA_REGALO_PER", "target_node": "laurea_manu"},
     {"source_node": "profumo_narciso_rodriguez", "predicate": "IDEA_REGALO_PER", "target_node": "laurea_manu"},
     {"source_node": "kindle", "predicate": "COSTA", "target_node": "474_euro"}
+  ]
+}
+
+Input: "Mamma ha detto che non portiamo Argo alla laurea di Martina."
+Output:
+{
+  "nodes": [
+    {"id": "mamma", "label": "Mamma", "type": "persona"},
+    {"id": "argo", "label": "Argo", "type": "animale"},
+    {"id": "laurea_martina", "label": "Laurea di Martina", "type": "evento"}
+  ],
+  "relations": [
+    {"source_node": "argo", "predicate": "NON_PARTECIPERA_A", "target_node": "laurea_martina"},
+    {"source_node": "mamma", "predicate": "HA_DECISO_PER", "target_node": "argo"}
   ]
 }
 ''';
