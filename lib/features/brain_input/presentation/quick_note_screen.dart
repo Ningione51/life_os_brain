@@ -29,7 +29,7 @@ class QuickNoteScreen extends StatefulWidget {
 }
 
 class _QuickNoteScreenState extends State<QuickNoteScreen> {
-  final NoteDao _noteDao = NoteDao();
+  final NoteDao _noteDao = NoteDao.instance;
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   List<Map<String, dynamic>> _allNotes = [];

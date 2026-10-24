@@ -1,135 +1,238 @@
 import 'dart:convert';
 import 'dart:io';
 
+const int bridgePort = 8080;
+const String ollamaBaseUrl = 'http://127.0.0.1:11434';
+
 void main() async {
-  final server = await HttpServer.bind(InternetAddress.anyIPv4, 8080);
-  stdout.writeln('=== Life_Os Micro-Bridge Dinamico attivo su 0.0.0.0:8080 ===');
+  final server = await HttpServer.bind(InternetAddress.anyIPv4, bridgePort);
+  print('=== Life_OS Micro-Bridge attivo su http://0.0.0.0:$bridgePort ===');
 
   await for (HttpRequest request in server) {
-    if (request.method == 'GET' && request.uri.path == '/ping') {
-      request.response
-        ..statusCode = HttpStatus.ok
-        ..write('ok');
+    // Gestione CORS
+    request.response.headers.add('Access-Control-Allow-Origin', '*');
+    request.response.headers.add('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+    request.response.headers.add('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (request.method == 'OPTIONS') {
+      request.response.statusCode = HttpStatus.ok;
       await request.response.close();
       continue;
     }
 
     if (request.method == 'POST' && request.uri.path == '/sync') {
-      try {
-        final bodyRaw = await utf8.decoder.bind(request).join();
-        final Map<String, dynamic> data = jsonDecode(bodyRaw);
-
-        final String noteContent = data['content'] ?? '';
-        final List<dynamic> existingEntities = data['existing_entities'] ?? [];
-        final String? base64Image = data['image_base64'];
-
-        String imageContext = '';
-
-        if (base64Image != null && base64Image.isNotEmpty) {
-          stdout.writeln('[Bridge] Analisi immagine con qwen2.5vl:7b...');
-          final visionResp = await _callOllama({
-            'model': 'qwen2.5vl:7b',
-            'prompt':
-                'Descrivi in modo preciso cosa vedi, estrai eventuale testo, coordinate, oggetti o prodotti.',
-            'images': [base64Image],
-            'stream': false,
-          });
-          imageContext = visionResp['response'] ?? '';
-        }
-
-        final fullText = imageContext.isNotEmpty
-            ? '$noteContent\n[Contenuto Immagine: $imageContext]'
-            : noteContent;
-
-        final existingListStr = existingEntities.isEmpty
-            ? 'Nessun nodo preesistente'
-            : existingEntities.join(', ');
-
-        final systemPrompt = '''
-Sei il motore di Knowledge Graph logico e dinamico di Life_Os.
-Analizza la nota ed estrai un grafo di concetti e relazioni di profondità variabile (da 1 a N salti) seguendo la logica naturale del testo, SENZA forzare un numero fisso di livelli.
-
-REGOLE LOGICHE FONDAMENTALI:
-1. RIUTILIZZO DEL CONTESTO: Se un concetto corrisponde a uno già presente nel grafo dell'utente [$existingListStr], usa ESATTAMENTE lo stesso nome per collegarti ad esso. Non usare MAI il simbolo "#".
-2. ANCORAGGIO AL SOGGETTO E ALL'UTENTE: 
-   - Ogni informazione che riguarda una persona (es. "Manu", "Martina") deve partire dal nodo di quella persona.
-   - I riferimenti in prima persona o possessivi ("io", "il mio", "nostro") DEVONO SEMPRE essere ancorati al nodo "Io" (es. "Il mio gatto Rufy" -> ("Io" --[possiede]--> "Rufy", "Rufy" --[è]--> "gatto").
-3. GESTIONE DELLE PREFERENZE E DEI BRAND SPECIFICI:
-   - Se l'utente esprime un gusto generale e poi un'eccezione o un brand specifico (es. "A Manu piace il cioccolato ma non le piace il cioccolato Lidl"), gestisci la gerarchia creando il sotto-nodo specifico collegato alla preferenza o direttamente all'entità con la relazione corretta (es. ("Manu" --[sfera]--> "Gusti"), ("Gusti" --[adora]--> "Cioccolato"), ("Cioccolato" --[marca non gradita]--> "Cioccolato Lidl") oppure ("Manu" --[non adora]--> "Cioccolato Lidl")). Non perdere mai il brand o la specificità indicata dall'utente.
-4. PROFONDITÀ DINAMICA (NON FORZARE LIVELLI INUTILI):
-   - Usa 1 SOLO SALTO per attributi o fatti atomici diretti (es. "La Manu è nata il 24/04/2003" -> ("Manu" --[data di nascita]--> "24/04/2003")).
-   - Usa 2 SALTI per contenitori logici, sfere di preferenze o eventi (es. "Regali laurea Manu: Kindle" -> ("Manu" --[evento]--> "Laurea"), ("Laurea" --[idea regalo]--> "Kindle")).
-   - Usa 3 O PIÙ SALTI per oggetti con dettagli, luoghi o sotto-attributi complessi.
-5. ENTITÀ COMPOSTE INTATTE: Non spezzare mai i nomi propri di prodotti, brand o luoghi (es. "Cioccolato Lidl", "Profumo Narciso Rodriguez", "Hotel della Cioccolata").
-6. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido con questa struttura:
-{
-  "entities": [
-    {"name": "Nome Entità", "type": "persona | evento | categoria | oggetto | luogo | data | concetto"}
-  ],
-  "relations": [
-    {"source": "Entità Origine", "predicate": "verbo o relazione", "target": "Entità Destinazione"}
-  ]
-}
-''';
-
-        DateTime oraAttuale = DateTime.now();
-        String messaggio = "[Bridge] Estrazione grafo con qwen2.5:7b, ora attuale: "+ oraAttuale.toString();
-        stdout.writeln(messaggio);
-        final llmResp = await _callOllama({
-          'model': 'qwen2.5:7b',
-          'system': systemPrompt,
-          'prompt': 'Testo della nota:\n"$fullText"',
-          'stream': false,
-          'format': 'json',
-        });
-
-        final Map<String, dynamic> graphJson =
-            jsonDecode(llmResp['response'] ?? '{"entities":[],"relations":[]}');
-
-        final embedResp = await _callOllamaEndpoint('/api/embeddings', {
-          'model': 'nomic-embed-text',
-          'prompt': fullText,
-        });
-
-        final responsePayload = jsonEncode({
-          'entities': graphJson['entities'] ?? [],
-          'relations': graphJson['relations'] ?? [],
-          'embedding': embedResp['embedding'] ?? [],
-          'image_extracted_text': imageContext,
-        });
-
-        request.response
-          ..statusCode = HttpStatus.ok
-          ..headers.contentType = ContentType.json
-          ..write(responsePayload);
-      } catch (e) {
-        stdout.writeln('[Errore Bridge]: $e');
-        request.response
-          ..statusCode = HttpStatus.internalServerError
-          ..headers.contentType = ContentType.json
-          ..write(jsonEncode({'error': e.toString()}));
-      } finally {
-        await request.response.close();
-      }
+      await _handleSync(request);
     } else {
       request.response.statusCode = HttpStatus.notFound;
+      request.response.write(jsonEncode({'error': 'Endpoint non trovato'}));
       await request.response.close();
     }
   }
 }
 
-Future<Map<String, dynamic>> _callOllama(Map<String, dynamic> payload) async {
-  return _callOllamaEndpoint('/api/generate', payload);
+Future<void> _handleSync(HttpRequest request) async {
+  try {
+    final bodyString = await utf8.decoder.bind(request).join();
+    final payload = jsonDecode(bodyString) as Map<String, dynamic>;
+
+    final String noteId = (payload['note_id'] ?? '').toString();
+    String content = (payload['content'] ?? payload['text'] ?? '').toString();
+    final String? base64Image = payload['image_base64'] as String?;
+    final List<dynamic> existingNodes = payload['existing_nodes'] as List<dynamic>? ?? [];
+
+    print('\n[SYNC] Ricevuta nota: $noteId (${existingNodes.length} nodi esistenti nel contesto)');
+
+    if (base64Image != null && base64Image.isNotEmpty) {
+      print('[VISION] Analisi immagine con qwen2.5vl:7b...');
+      final visionDescription = await _analyzeImageWithQwenVL(base64Image, content);
+      if (visionDescription.isNotEmpty) {
+        content = '$content\n[Dettagli Immagine]: $visionDescription'.trim();
+      }
+    }
+
+    print('[KG] Estrazione Knowledge Graph con qwen2.5:7b...');
+    final kgData = await _extractKnowledgeGraph(content, existingNodes);
+
+    print('[EMBED] Generazione embedding con nomic-embed-text...');
+    final embedding = await _generateEmbedding(content);
+
+    final responsePayload = {
+      'status': 'ok',
+      'note_id': noteId,
+      'enriched_content': content,
+      'knowledge_graph': kgData,
+      'embedding': embedding,
+    };
+
+    request.response.statusCode = HttpStatus.ok;
+    request.response.headers.contentType = ContentType.json;
+    request.response.write(jsonEncode(responsePayload));
+    await request.response.close();
+    print('[OK] Sincronizzazione completata per nota $noteId');
+  } catch (e, stack) {
+    print('[ERRORE] $e\n$stack');
+    request.response.statusCode = HttpStatus.internalServerError;
+    request.response.headers.contentType = ContentType.json;
+    request.response.write(jsonEncode({'error': e.toString()}));
+    await request.response.close();
+  }
 }
 
-Future<Map<String, dynamic>> _callOllamaEndpoint(
-    String path, Map<String, dynamic> payload) async {
+Future<Map<String, dynamic>> _extractKnowledgeGraph(
+  String text,
+  List<dynamic> existingNodes,
+) async {
+  final compactExistingNodes = existingNodes.map((n) {
+    if (n is Map) {
+      return '${n['id']} (label: "${n['label']}", tipo: ${n['type']})';
+    }
+    return n.toString();
+  }).join(', ');
+
+  final systemPrompt = '''
+Sei il motore di Knowledge Graph di Life_OS. Estrai Nodi (entità) e Relazioni (triplette orientate) dalla nota in formato JSON rigoroso.
+
+NODI GIÀ ESISTENTI NEL DATABASE:
+[${compactExistingNodes.isEmpty ? 'Nessun nodo salvato, inizia creando "io"' : compactExistingNodes}]
+
+REGOLE ONTOLOGICHE (SEGUI ALLA LETTERA):
+1. ANCORAGGIO: L'utente che scrive è SEMPRE id: "io". Non creare collegamenti inventati tra "io" e oggetti se non esplicitamente descritti da un'azione nella nota.
+2. IDEE E IPOTESI: Se qualcosa è un'idea per un regalo o un piano futuro non ancora realizzato, usa predicati come "IDEA_REGALO_PER". Non usare "HA_RICEVUTO".
+3. EVENTI: Gli eventi (es. lauree, compleanni) DEVONO essere collegati al soggetto protagonista usando "PROTAGONISTA". Es: laurea_martina -> PROTAGONISTA -> martina.
+4. ECCEZIONI E NEGAZIONI: Crea un nodo padre per la categoria generale e un nodo figlio per l'eccezione (SOTTOCATEGORIA_DI). Applica il verbo positivo al padre e il verbo negativo (NON_AMA) ESCLUSIVAMENTE al figlio. Mai creare contraddizioni sullo stesso nodo.
+5. FORMATO: id e source/target_node in snake_case minuscolo. predicate in MAIUSCOLO_SNAKE_CASE. type: persona, animale, oggetto, concetto, evento, luogo, data.
+
+ESEMPI DI RIFERIMENTO (Output Atteso):
+Input: "Manu e Martina sono sorelle. Il 26/10/2024 io e Manu dobbiamo andare alla laurea di Martina."
+Output:
+{
+  "nodes": [
+    {"id": "io", "label": "Io", "type": "persona"},
+    {"id": "manu", "label": "Manu", "type": "persona"},
+    {"id": "martina", "label": "Martina", "type": "persona"},
+    {"id": "laurea_martina", "label": "Laurea di Martina", "type": "evento"},
+    {"id": "26_10_2024", "label": "26/10/2024", "type": "data"}
+  ],
+  "relations": [
+    {"source_node": "manu", "predicate": "SORELLA_DI", "target_node": "martina"},
+    {"source_node": "io", "predicate": "PARTECIPERA_A", "target_node": "laurea_martina"},
+    {"source_node": "manu", "predicate": "PARTECIPERA_A", "target_node": "laurea_martina"},
+    {"source_node": "laurea_martina", "predicate": "PROTAGONISTA", "target_node": "martina"},
+    {"source_node": "laurea_martina", "predicate": "PROGRAMMATO_IL", "target_node": "26_10_2024"}
+  ]
+}
+
+Input: "A Manu piace il cioccolato ma a Manu non piace il cioccolato Lidl."
+Output:
+{
+  "nodes": [
+    {"id": "manu", "label": "Manu", "type": "persona"},
+    {"id": "cioccolato", "label": "Cioccolato", "type": "concetto"},
+    {"id": "cioccolato_lidl", "label": "Cioccolato Lidl", "type": "concetto"}
+  ],
+  "relations": [
+    {"source_node": "manu", "predicate": "AMA", "target_node": "cioccolato"},
+    {"source_node": "cioccolato_lidl", "predicate": "SOTTOCATEGORIA_DI", "target_node": "cioccolato"},
+    {"source_node": "manu", "predicate": "NON_AMA", "target_node": "cioccolato_lidl"}
+  ]
+}
+
+Input: "Idea regali laurea Manu: Kindle, profumo Narciso Rodriguez. Il Kindle costa 474."
+Output:
+{
+  "nodes": [
+    {"id": "manu", "label": "Manu", "type": "persona"},
+    {"id": "laurea_manu", "label": "Laurea di Manu", "type": "evento"},
+    {"id": "kindle", "label": "Kindle", "type": "oggetto"},
+    {"id": "profumo_narciso_rodriguez", "label": "Profumo Narciso Rodriguez", "type": "oggetto"},
+    {"id": "474_euro", "label": "474 Euro", "type": "concetto"}
+  ],
+  "relations": [
+    {"source_node": "laurea_manu", "predicate": "PROTAGONISTA", "target_node": "manu"},
+    {"source_node": "kindle", "predicate": "IDEA_REGALO_PER", "target_node": "laurea_manu"},
+    {"source_node": "profumo_narciso_rodriguez", "predicate": "IDEA_REGALO_PER", "target_node": "laurea_manu"},
+    {"source_node": "kindle", "predicate": "COSTA", "target_node": "474_euro"}
+  ]
+}
+''';
+
+  final response = await _postToOllama('/api/chat', {
+    'model': 'qwen2.5:7b',
+    'messages': [
+      {'role': 'system', 'content': systemPrompt},
+      {'role': 'user', 'content': 'Estrai il Knowledge Graph da questa nota:\n"$text"'},
+    ],
+    'format': 'json',
+    'stream': false,
+    'options': {
+      'temperature': 0.0, // Impostato a 0.0 per massima rigidità strutturale
+    },
+  });
+
+  final messageContent = response['message']?['content']?.toString() ?? '{}';
+  try {
+    return jsonDecode(messageContent) as Map<String, dynamic>;
+  } catch (_) {
+    return {'nodes': [], 'relations': []};
+  }
+}
+
+Future<String> _analyzeImageWithQwenVL(String base64Image, String userPrompt) async {
+  try {
+    final response = await _postToOllama('/api/chat', {
+      'model': 'qwen2.5vl:7b',
+      'messages': [
+        {
+          'role': 'user',
+          'content': userPrompt.isNotEmpty
+              ? 'Descrivi gli elementi chiave, testi, date, persone o oggetti presenti in questa immagine in relazione a: $userPrompt'
+              : 'Estrai il testo e descrivi in modo conciso gli elementi chiave di questa immagine.',
+          'images': [base64Image],
+        }
+      ],
+      'stream': false,
+    });
+    return response['message']?['content']?.toString().trim() ?? '';
+  } catch (e) {
+    print('[VISION WARN] Impossibile analizzare immagine: $e');
+    return '';
+  }
+}
+
+Future<List<double>> _generateEmbedding(String text) async {
+  try {
+    final response = await _postToOllama('/api/embeddings', {
+      'model': 'nomic-embed-text',
+      'prompt': text,
+    });
+    if (response['embedding'] is List) {
+      return (response['embedding'] as List)
+          .map((e) => (e as num).toDouble())
+          .toList();
+    }
+    return [];
+  } catch (e) {
+    print('[EMBED WARN] Impossibile generare embedding: $e');
+    return [];
+  }
+}
+
+Future<Map<String, dynamic>> _postToOllama(
+  String endpoint,
+  Map<String, dynamic> body,
+) async {
   final client = HttpClient();
-  final req = await client.postUrl(Uri.parse('http://127.0.0.1:11434$path'));
-  req.headers.contentType = ContentType.json;
-  req.write(jsonEncode(payload));
-  final resp = await req.close();
-  final body = await utf8.decoder.bind(resp).join();
+  final request = await client.postUrl(Uri.parse('$ollamaBaseUrl$endpoint'));
+  request.headers.contentType = ContentType.json;
+  request.add(utf8.encode(jsonEncode(body)));
+
+  final response = await request.close();
+  final responseBody = await utf8.decoder.bind(response).join();
   client.close();
-  return jsonDecode(body) as Map<String, dynamic>;
+
+  if (response.statusCode != 200) {
+    // Fix: Corretta l'interpolazione della stringa di errore su più righe
+    throw Exception('Errore Ollama ($endpoint): ${response.statusCode}\n$responseBody');
+  }
+  return jsonDecode(responseBody) as Map<String, dynamic>;
 }

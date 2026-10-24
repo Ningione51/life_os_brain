@@ -33,7 +33,7 @@ class CipherDatabase {
     return await openDatabase(
       path,
       password: encryptionKey,
-      version: 2,
+      version: 3,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
@@ -69,10 +69,24 @@ class CipherDatabase {
     if (oldVersion < 2) {
       try {
         await db.execute(
-          'ALTER TABLE notes ADD COLUMN ai_synced INTEGER NOT NULL DEFAULT 0',
-        );
+            'ALTER TABLE notes ADD COLUMN ai_synced INTEGER NOT NULL DEFAULT 0;');
       } catch (_) {}
       await _createKnowledgeGraphTables(db);
+    }
+    if (oldVersion < 3) {
+      // Ricrea o adatta la tabella delle relazioni per includere il vincolo UNIQUE
+      await db.execute('DROP TABLE IF EXISTS kg_relations;');
+      await db.execute('''
+      CREATE TABLE IF NOT EXISTS kg_relations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          note_id TEXT NOT NULL,
+          source_node TEXT NOT NULL,
+          predicate TEXT NOT NULL,
+          target_node TEXT NOT NULL,
+          FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+          UNIQUE(source_node, target_node, predicate)
+      )
+    ''');
     }
   }
 
@@ -87,12 +101,13 @@ class CipherDatabase {
 
     await db.execute('''
       CREATE TABLE IF NOT EXISTS kg_relations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        note_id TEXT NOT NULL,
-        source_node TEXT NOT NULL,
-        predicate TEXT NOT NULL,
-        target_node TEXT NOT NULL,
-        FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          note_id TEXT NOT NULL,
+          source_node TEXT NOT NULL,
+          predicate TEXT NOT NULL,
+          target_node TEXT NOT NULL,
+          FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+          UNIQUE(source_node, target_node, predicate)
       )
     ''');
   }

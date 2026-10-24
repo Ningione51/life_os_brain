@@ -12,7 +12,8 @@ class _GraphNode {
   final String label;
   final String fullText;
   final String nodeType;
-  final int depth; // Profondità dinamica (0 = Soggetto Radice, 1..N = salti logici)
+  final int
+      depth; // Profondità dinamica (0 = Soggetto Radice, 1..N = salti logici)
   final int connectionCount;
   Offset position;
 
@@ -26,7 +27,8 @@ class _GraphNode {
     required this.position,
   });
 
-  bool get isPrimaryHub => depth == 0 || nodeType.contains('person') || nodeType.contains('soggett');
+  bool get isPrimaryHub =>
+      depth == 0 || nodeType.contains('person') || nodeType.contains('soggett');
   bool get isBranchHub => depth > 0 && connectionCount >= 2;
 }
 
@@ -52,7 +54,7 @@ class MemoryGraphScreen extends StatefulWidget {
 }
 
 class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
-  final NoteDao _noteDao = NoteDao();
+  final NoteDao _noteDao = NoteDao.instance;
   final List<_GraphNode> _nodes = [];
   final List<_GraphEdge> _edges = [];
   _GraphNode? _selectedNode;
@@ -85,7 +87,8 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
   }
 
   Offset _screenToWorld(Offset screenPoint, Size viewportSize) {
-    final screenCenter = Offset(viewportSize.width / 2, viewportSize.height / 2);
+    final screenCenter =
+        Offset(viewportSize.width / 2, viewportSize.height / 2);
     final centered = screenPoint - screenCenter - _cameraOffset;
     final unscaled = centered / _cameraScale;
     final cosA = cos(-_cameraRotation);
@@ -134,12 +137,17 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
 
       // 1. Individua le radici logiche (Persone o nodi da cui partono le catene senza genitori)
       final roots = <String>[];
+      if (nodeById.containsKey('io') && (totalDegree['io'] ?? 0) > 0) {
+        roots.add('io');
+      }
       for (final n in kgNodes) {
         final id = n['id'] as String;
-        if ((totalDegree[id] ?? 0) == 0) continue;
+        if (id == 'io' || (totalDegree[id] ?? 0) == 0) continue;
         final type = (n['type'] as String).toLowerCase();
         final hasNoParents = (inParents[id]?.isEmpty ?? true);
-        if (type.contains('person') || type.contains('soggett') || hasNoParents) {
+        if (type.contains('person') ||
+            type.contains('soggett') ||
+            hasNoParents) {
           roots.add(id);
         }
       }
@@ -205,12 +213,14 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
           byParent.forEach((pId, siblings) {
             final parentPos = posMap[pId] ?? Offset.zero;
             final grandParentId = primaryParent[pId];
-            final grandParentPos = grandParentId != null ? posMap[grandParentId] : null;
+            final grandParentPos =
+                grandParentId != null ? posMap[grandParentId] : null;
 
             double baseAngle;
             if (grandParentPos != null) {
               // Prosegue nella direzione esterna del ramo
-              baseAngle = atan2(parentPos.dy - grandParentPos.dy, parentPos.dx - grandParentPos.dx);
+              baseAngle = atan2(parentPos.dy - grandParentPos.dy,
+                  parentPos.dx - grandParentPos.dx);
             } else if (parentPos != Offset.zero) {
               baseAngle = atan2(parentPos.dy, parentPos.dx);
             } else {
@@ -227,7 +237,8 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                 final spread = (i - (siblings.length - 1) / 2.0) * 0.62;
                 angle = baseAngle + spread;
               }
-              posMap[childId] = parentPos + Offset(stepDist * cos(angle), stepDist * sin(angle));
+              posMap[childId] = parentPos +
+                  Offset(stepDist * cos(angle), stepDist * sin(angle));
             }
           });
         }
@@ -240,16 +251,19 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
         final n = nodeById[id];
         if (n == null) continue;
 
-        final cleanLabel = (n['label'] as String).replaceAll(RegExp(r'^#+'), '');
+        final cleanLabel =
+            (n['label'] as String).replaceAll(RegExp(r'^#+'), '');
         final type = (n['type'] as String).toLowerCase();
 
         final summaryLines = kgRelations
             .where((r) => r['source_node'] == id || r['target_node'] == id)
-            .map((r) => '${r['source_node']} ➔ ${r['predicate']} ➔ ${r['target_node']}')
+            .map((r) =>
+                '${r['source_node']} ➔ ${r['predicate']} ➔ ${r['target_node']}')
             .toSet()
             .join('\n');
 
-        final isPerson = d == 0 || type.contains('person') || type.contains('soggett');
+        final isPerson =
+            d == 0 || type.contains('person') || type.contains('soggett');
 
         nodes.add(_GraphNode(
           id: 'kg_$id',
@@ -362,7 +376,8 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
             if (edge.targetId == _selectedNode!.id) otherId = edge.sourceId;
             if (otherId != null) {
               final found = _nodes.where((n) => n.id == otherId);
-              if (found.isNotEmpty && !relatedNodes.any((r) => r.id == otherId)) {
+              if (found.isNotEmpty &&
+                  !relatedNodes.any((r) => r.id == otherId)) {
                 relatedNodes.add(found.first);
               }
             }
@@ -374,10 +389,12 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTapUp: (details) {
-                final worldPos = _screenToWorld(details.localPosition, viewportSize);
+                final worldPos =
+                    _screenToWorld(details.localPosition, viewportSize);
                 _GraphNode? tapped;
                 for (final node in _nodes) {
-                  final hitRadius = (node.isPrimaryHub ? 38.0 : 30.0) / _cameraScale.clamp(0.5, 2.0);
+                  final hitRadius = (node.isPrimaryHub ? 38.0 : 30.0) /
+                      _cameraScale.clamp(0.5, 2.0);
                   if ((node.position - worldPos).distance <= hitRadius) {
                     tapped = node;
                     break;
@@ -398,9 +415,11 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                 _draggedNode = null;
 
                 if (details.pointerCount == 1) {
-                  final worldPos = _screenToWorld(details.localFocalPoint, viewportSize);
+                  final worldPos =
+                      _screenToWorld(details.localFocalPoint, viewportSize);
                   for (final node in _nodes) {
-                    if ((node.position - worldPos).distance <= 36.0 / _cameraScale.clamp(0.5, 2.0)) {
+                    if ((node.position - worldPos).distance <=
+                        36.0 / _cameraScale.clamp(0.5, 2.0)) {
                       _draggedNode = node;
                       _selectedNode = node;
                       HapticFeedback.selectionClick();
@@ -412,7 +431,8 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
               onScaleUpdate: (details) {
                 setState(() {
                   if (details.pointerCount == 1 && _draggedNode != null) {
-                    final deltaScreen = details.localFocalPoint - _lastFocalPoint;
+                    final deltaScreen =
+                        details.localFocalPoint - _lastFocalPoint;
                     _lastFocalPoint = details.localFocalPoint;
                     final unscaled = deltaScreen / _cameraScale;
                     final cosA = cos(-_cameraRotation);
@@ -430,10 +450,12 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                   _cameraOffset += focalDelta;
 
                   if (details.pointerCount >= 2) {
-                    _cameraScale = (_baseScale * details.scale).clamp(0.25, 3.8);
+                    _cameraScale =
+                        (_baseScale * details.scale).clamp(0.25, 3.8);
 
                     if (!_rotationUnlocked) {
-                      if (details.rotation.abs() > _rotationUnlockThresholdRad) {
+                      if (details.rotation.abs() >
+                          _rotationUnlockThresholdRad) {
                         _rotationUnlocked = true;
                         HapticFeedback.selectionClick();
                       }
@@ -442,7 +464,8 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                     if (_rotationUnlocked) {
                       final rawDiff = details.rotation -
                           (details.rotation.sign * _rotationUnlockThresholdRad);
-                      double candidateRot = (_baseRotation + rawDiff) % (2 * pi);
+                      double candidateRot =
+                          (_baseRotation + rawDiff) % (2 * pi);
                       if (candidateRot > pi) candidateRot -= 2 * pi;
                       if (candidateRot < -pi) candidateRot += 2 * pi;
 
@@ -479,7 +502,6 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                 ),
               ),
             ),
-
             Positioned(
               top: 8,
               right: 16,
@@ -497,7 +519,8 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                         tooltip: 'Raddrizza Orizzonte',
                         icon: Transform.rotate(
                           angle: _cameraRotation,
-                          child: const Icon(Icons.explore_outlined, color: AppColors.accentCoral, size: 19),
+                          child: const Icon(Icons.explore_outlined,
+                              color: AppColors.accentCoral, size: 19),
                         ),
                         onPressed: () {
                           HapticFeedback.mediumImpact();
@@ -509,12 +532,14 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                       ),
                     IconButton(
                       tooltip: 'Centra Mappa',
-                      icon: const Icon(Icons.center_focus_strong_outlined, color: AppColors.statusGreen, size: 18),
+                      icon: const Icon(Icons.center_focus_strong_outlined,
+                          color: AppColors.statusGreen, size: 18),
                       onPressed: _resetCamera,
                     ),
                     IconButton(
                       tooltip: 'Ricalcola Grafo col PC',
-                      icon: const Icon(Icons.auto_fix_high_rounded, color: AppColors.accentCoral, size: 18),
+                      icon: const Icon(Icons.auto_fix_high_rounded,
+                          color: AppColors.accentCoral, size: 18),
                       onPressed: () async {
                         HapticFeedback.heavyImpact();
                         await _noteDao.resetAllAiSyncForRebuild();
@@ -526,7 +551,6 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                 ),
               ),
             ),
-
             if (_selectedNode != null)
               Positioned(
                 bottom: 12,
@@ -538,7 +562,9 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                     color: AppColors.cardSurface.withOpacity(0.96),
                     borderRadius: BorderRadius.circular(24),
                     border: Border.all(
-                      color: _selectedNode!.isPrimaryHub ? AppColors.accentCoral : AppColors.statusGreen,
+                      color: _selectedNode!.isPrimaryHub
+                          ? AppColors.accentCoral
+                          : AppColors.statusGreen,
                       width: 1.5,
                     ),
                   ),
@@ -554,8 +580,12 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                               Icon(
                                 _selectedNode!.isPrimaryHub
                                     ? Icons.person_pin_circle_rounded
-                                    : (_selectedNode!.isBranchHub ? Icons.account_tree_outlined : Icons.label_outline),
-                                color: _selectedNode!.isPrimaryHub ? AppColors.accentCoral : AppColors.statusGreen,
+                                    : (_selectedNode!.isBranchHub
+                                        ? Icons.account_tree_outlined
+                                        : Icons.label_outline),
+                                color: _selectedNode!.isPrimaryHub
+                                    ? AppColors.accentCoral
+                                    : AppColors.statusGreen,
                                 size: 18,
                               ),
                               const SizedBox(width: 8),
@@ -571,7 +601,8 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                           ),
                           GestureDetector(
                             onTap: () => setState(() => _selectedNode = null),
-                            child: const Icon(Icons.close_rounded, color: AppColors.textSecondary, size: 18),
+                            child: const Icon(Icons.close_rounded,
+                                color: AppColors.textSecondary, size: 18),
                           ),
                         ],
                       ),
@@ -580,7 +611,10 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                         _selectedNode!.fullText,
                         maxLines: 4,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: AppColors.textPrimary, fontSize: 12.5, height: 1.4),
+                        style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 12.5,
+                            height: 1.4),
                       ),
                       if (relatedNodes.isNotEmpty) ...[
                         const SizedBox(height: 10),
@@ -595,15 +629,20 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
                                 },
                                 child: Container(
                                   margin: const EdgeInsets.only(right: 8),
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 6),
                                   decoration: BoxDecoration(
                                     color: AppColors.background,
                                     borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: AppColors.accentCoral.withOpacity(0.5)),
+                                    border: Border.all(
+                                        color: AppColors.accentCoral
+                                            .withOpacity(0.5)),
                                   ),
                                   child: Text(
                                     rNode.label,
-                                    style: const TextStyle(color: AppColors.textPrimary, fontSize: 12),
+                                    style: const TextStyle(
+                                        color: AppColors.textPrimary,
+                                        fontSize: 12),
                                   ),
                                 ),
                               );
@@ -658,7 +697,10 @@ class _ObsidianGraphPainter extends CustomPainter {
     for (double x = -700; x <= 700; x += step) {
       for (double y = -700; y <= 700; y += step) {
         final pt = _worldToScreen(Offset(x, y), screenCenter);
-        if (pt.dx >= 0 && pt.dx <= size.width && pt.dy >= 0 && pt.dy <= size.height) {
+        if (pt.dx >= 0 &&
+            pt.dx <= size.width &&
+            pt.dy >= 0 &&
+            pt.dy <= size.height) {
           canvas.drawCircle(pt, 1.3, dotPaint);
         }
       }
@@ -687,20 +729,25 @@ class _ObsidianGraphPainter extends CustomPainter {
 
       canvas.drawLine(p1, p2, paint);
 
-      if ((!isDimmed || isHighlighted) && edge.predicate.isNotEmpty && cameraScale > 0.65) {
+      if ((!isDimmed || isHighlighted) &&
+          edge.predicate.isNotEmpty &&
+          cameraScale > 0.65) {
         final midPoint = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
         final predSpan = TextSpan(
           text: edge.predicate,
           style: TextStyle(
-            color: isHighlighted ? AppColors.accentCoral : AppColors.textSecondary,
+            color:
+                isHighlighted ? AppColors.accentCoral : AppColors.textSecondary,
             fontSize: isHighlighted ? 10.5 : 9.0,
             fontWeight: isHighlighted ? FontWeight.bold : FontWeight.w500,
           ),
         );
-        final tp = TextPainter(text: predSpan, textDirection: TextDirection.ltr)..layout();
+        final tp = TextPainter(text: predSpan, textDirection: TextDirection.ltr)
+          ..layout();
         canvas.drawRRect(
           RRect.fromRectAndRadius(
-            Rect.fromCenter(center: midPoint, width: tp.width + 8, height: tp.height + 3),
+            Rect.fromCenter(
+                center: midPoint, width: tp.width + 8, height: tp.height + 3),
             const Radius.circular(6),
           ),
           Paint()..color = AppColors.background.withOpacity(0.88),
@@ -717,7 +764,8 @@ class _ObsidianGraphPainter extends CustomPainter {
           edges.any((e) =>
               (e.sourceId == selectedNode!.id && e.targetId == node.id) ||
               (e.targetId == selectedNode!.id && e.sourceId == node.id));
-      final bool isDimmed = selectedNode != null && !isSelected && !isConnectedToSelected;
+      final bool isDimmed =
+          selectedNode != null && !isSelected && !isConnectedToSelected;
 
       final double rawRadius = node.isPrimaryHub
           ? 20.0
@@ -726,7 +774,9 @@ class _ObsidianGraphPainter extends CustomPainter {
 
       final Color mainColor = node.isPrimaryHub
           ? AppColors.accentCoral
-          : (node.isBranchHub ? const Color(0xFF66BB9A) : AppColors.statusGreen);
+          : (node.isBranchHub
+              ? const Color(0xFF66BB9A)
+              : AppColors.statusGreen);
 
       if (isSelected || node.isPrimaryHub) {
         canvas.drawCircle(
@@ -760,7 +810,8 @@ class _ObsidianGraphPainter extends CustomPainter {
               : FontWeight.w500,
         ),
       );
-      final tp = TextPainter(text: textSpan, textDirection: TextDirection.ltr)..layout();
+      final tp = TextPainter(text: textSpan, textDirection: TextDirection.ltr)
+        ..layout();
 
       final pillRect = RRect.fromRectAndRadius(
         Rect.fromCenter(
@@ -773,9 +824,11 @@ class _ObsidianGraphPainter extends CustomPainter {
 
       canvas.drawRRect(
         pillRect,
-        Paint()..color = AppColors.cardSurface.withOpacity(isDimmed ? 0.3 : 0.92),
+        Paint()
+          ..color = AppColors.cardSurface.withOpacity(isDimmed ? 0.3 : 0.92),
       );
-      tp.paint(canvas, pos + Offset(-tp.width / 2, baseRadius + 14 - tp.height / 2));
+      tp.paint(
+          canvas, pos + Offset(-tp.width / 2, baseRadius + 14 - tp.height / 2));
     }
   }
 
